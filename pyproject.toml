@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "resilient-wireless-pid"
+version = "1.0.0"
+description = "A software-defined framework for hardening wireless control loops against jitter"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Jacob Thurman", email = "your.email@uconn.edu"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "influxdb-client>=1.36.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/jthurm11/resilient-wireless-pid"
+
+[project.scripts]
+# This defines terminal commands that automatically link to your python code on the Pi
+run-controller = "resilient_pid.main:main"
