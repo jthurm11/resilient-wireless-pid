@@ -23,6 +23,7 @@ dependencies = [
     "numpy>=1.24.0",
     "scipy>=1.10.0",
     "pandas>=2.0.0",
+    "requests>=2.28.0",
 ]
 
 [project.urls]
@@ -30,7 +31,7 @@ Homepage = "https://github.com/jthurm11/resilient-wireless-pid"
 
 [project.scripts]
 run-controller = "resilient_pid.main:main"
-run-plant = "resilient_pid.plant.simulated_plant:main"
+run-plant = "resilient_pid.plant.plant_interface:main"
 run-c2 = "resilient_pid.c2.c2_server:main"
 run-netem = "resilient_pid.emulation.traffic_control:main"
 
