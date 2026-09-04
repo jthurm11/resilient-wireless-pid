@@ -94,7 +94,7 @@ graph TD
 
 ### 1. Workspace Provisioning
 ```bash
-git clone [https://github.com/](https://github.com/)<your-username>/resilient-wireless-pid.git
+git clone https://github.com/jthurm11/resilient-wireless-pid.git
 cd resilient-wireless-pid
 
 python3 -m venv .venv
