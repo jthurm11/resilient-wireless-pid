@@ -1,11 +1,11 @@
-"""
-Smith Predictor dead-time compensation using an internal linear
-model and circular delay buffer to cancel transport lag.
-"""
 from typing import Tuple
 from resilient_pid.controller.pid import DiscretePID
 
 class SmithPredictor:
+    """
+    Smith Predictor dead-time compensation using an internal linear
+    model and circular delay buffer to cancel transport lag.
+    """
     def __init__(self, kp: float, ki: float, kd: float, dt: float,
                  plant_gain: float = 8.0, plant_tau: float = 10.0, plant_delay_ms: float = 100.0,
                  output_limits: Tuple[float, float] = (-100.0, 100.0)):
