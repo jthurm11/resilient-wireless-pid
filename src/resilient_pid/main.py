@@ -2,6 +2,7 @@
 """
 src/resilient_pid/main.py
 Main runtime orchestrator and CLI entry point for resilient-wireless-pid.
+Supports standalone batch evaluation, auto-spawning C2, and bidirectional sync.
 """
 import os
 import sys
@@ -12,7 +13,7 @@ import logging
 import argparse
 import threading
 import subprocess
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import requests
 
@@ -38,18 +39,41 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Resilient Wireless DCS Runtime Controller")
-    parser.add_argument("--mode", choices=["baseline", "smith", "resilient"], default="baseline")
-    parser.add_argument("--steps", type=int, default=500)
-    parser.add_argument("--dt", type=float, default=0.05)
-    parser.add_argument("--setpoint", type=float, default=50.0)
-    parser.add_argument("--target-host", type=str, default=os.getenv("PLANT_IP", "10.10.10.2"))
-    parser.add_argument("--target-port", type=int, default=int(os.getenv("PLANT_PORT", "5005")))
-    parser.add_argument("--trial-id", type=str, default="")
-    parser.add_argument("--c2-port", type=int, default=int(os.getenv("C2_PORT", "5000")))
-    parser.add_argument("--no-c2", action="store_true", help="Disable C2 sync and auto-spawning completely")
-    parser.add_argument("--enable-ui", action="store_true", help="Instruct spawned C2 instance to serve test web UI")
+    parser.add_argument("--mode", choices=["baseline", "smith", "resilient"], default="baseline",
+                        help="Control law architecture under evaluation")
+    parser.add_argument("--steps", type=int, default=500, help="Total steps to execute (if no-c2)")
+    parser.add_argument("--dt", type=float, default=0.05, help="Sampling period in seconds (default: 50ms)")
+    # Default setpoint is set to None so we can detect if the operator explicitly specified it
+    parser.add_argument("--setpoint", type=float, default=None, help="Target process variable setpoint")
+    parser.add_argument("--target-host", type=str, default=os.getenv("PLANT_IP", "10.10.10.2"),
+                        help="Target plant UDP network host IP")
+    parser.add_argument("--target-port", type=int, default=int(os.getenv("PLANT_PORT", "5005")),
+                        help="Target plant UDP port")
+    parser.add_argument("--trial-id", type=str, default="", help="Unique experiment trial identifier")
+    parser.add_argument("--c2-port", type=int, default=int(os.getenv("C2_PORT", "5000")),
+                        help="Supervisory C2 HTTP port")
+    parser.add_argument("--no-c2", action="store_true", help="Disable C2 sync and auto-spawning entirely")
+    parser.add_argument("--enable-ui", action="store_true", help="Mount minimal operator web UI at /")
     parser.add_argument("--mock-loop", action="store_true", help="Simulate first-order plant locally without UDP")
     return parser.parse_args()
+
+
+def push_c2_configuration(port: int, payload: Dict[str, Any]) -> bool:
+    """
+    Transmit CLI configuration upstream to C2 to make it the active source of truth.
+    Retries up to 5 times if C2 is currently completing a cold start.
+    """
+    url = f"http://127.0.0.1:{port}/api/control"
+    for _ in range(5):
+        try:
+            res = requests.post(url, json=payload, timeout=0.5)
+            if res.status_code == 200:
+                logger.info("Successfully synchronized active parameters to C2: %s", payload)
+                return True
+        except requests.RequestException:
+            time.sleep(0.3)
+    logger.warning("Could not reach C2 on port %d to push startup parameters.", port)
+    return False
 
 
 class ControllerRuntime:
@@ -59,7 +83,8 @@ class ControllerRuntime:
         self.plant_addr = (args.target_host, args.target_port)
 
         self.dt = args.dt
-        self.setpoint = args.setpoint
+        # Default to 50.0 if not specified on CLI
+        self.setpoint = args.setpoint if args.setpoint is not None else 50.0
         self.mode = args.mode
         self.trial_id = args.trial_id or f"{args.mode}_{int(time.time())}"
         self.is_running = True
@@ -68,6 +93,7 @@ class ControllerRuntime:
         self.seq_num = 0
         self.last_known_pv = 0.0
 
+        # Output limits match 0-100% actuator duty
         self.controllers = {
             "baseline": DiscretePID(kp=self.kp, ki=self.ki, kd=self.kd, dt=self.dt, output_limits=(0.0, 100.0)),
             "smith": SmithPredictor(kp=self.kp, ki=self.ki, kd=self.kd, dt=self.dt, output_limits=(0.0, 100.0)),
@@ -91,7 +117,8 @@ class ControllerRuntime:
             self._socket.settimeout(self.dt * 0.8)
 
     def start(self) -> None:
-        logger.info("Starting Controller | Target Plant: %s | Mode: %s", self.plant_addr, self.mode)
+        logger.info("Starting Controller | Target Plant: %s | Mode: %s | Setpoint: %.2f", 
+                    self.plant_addr, self.mode, self.setpoint)
         if hasattr(self.telemetry, "start"):
             self.telemetry.start()
 
@@ -121,7 +148,12 @@ class ControllerRuntime:
                     with self.lock:
                         self.is_running = data.get("is_running", self.is_running)
                         self.trial_id = data.get("trial_id", self.trial_id)
-                        mode_map = {"standard_pid": "baseline", "smith_predictor": "smith", "resilient_pid": "resilient"}
+                        
+                        mode_map = {
+                            "standard_pid": "baseline", 
+                            "smith_predictor": "smith", 
+                            "resilient_pid": "resilient"
+                        }
                         raw_alg = data.get("algorithm", self.mode)
                         self.mode = mode_map.get(raw_alg, raw_alg)
                         self.setpoint = float(data.get("setpoint", self.setpoint))
@@ -204,42 +236,37 @@ class ControllerRuntime:
                 next_tick = time.perf_counter()
 
 
-def sync_c2_ui_preference(port: int, enable_ui: bool) -> None:
-    """Explicitly toggle the C2 server UI state via REST IPC."""
-    try:
-        requests.post(
-            f"http://127.0.0.1:{port}/api/control",
-            json={"ui_enabled": enable_ui},
-            timeout=1.0
-        )
-    except requests.RequestException:
-        pass
-
-
 def main() -> None:
     args = parse_args()
     c2_proc = None
     c2_log_file = None
 
-    # Handle C2 lifecycle and UI synchronization
+    # Handle C2 lifecycle management
     if not args.no_c2:
-        if is_port_in_use(args.c2_port):
-            logger.info("Existing C2 server detected on port %d. Synchronizing UI preference...", args.c2_port)
-            sync_c2_ui_preference(args.c2_port, args.enable_ui)
-        else:
-            logger.info("Port %d vacant. Spawning background C2 process (logs -> /tmp/c2_server.log)...", args.c2_port)
+        if not is_port_in_use(args.c2_port):
+            logger.info("Port %d vacant. Spawning background C2 process...", args.c2_port)
             c2_log_file = open("/tmp/c2_server.log", "a")
             cmd = [sys.executable, "-m", "resilient_pid.c2.c2_server", "--port", str(args.c2_port)]
             if args.enable_ui:
                 cmd.append("--enable-ui")
+            c2_proc = subprocess.Popen(cmd, stdout=c2_log_file, stderr=c2_log_file)
+            time.sleep(1.0)
+        else:
+            logger.info("Existing C2 server detected on port %d.", args.c2_port)
 
-            # Route subprocess standard streams away from current terminal
-            c2_proc = subprocess.Popen(
-                cmd,
-                stdout=c2_log_file,
-                stderr=c2_log_file
-            )
-            time.sleep(1.0)  # Yield to permit socket bind
+        # Build initial synchronization payload from CLI arguments
+        init_payload: Dict[str, Any] = {
+            "ui_enabled": args.enable_ui,
+            "algorithm": args.mode,
+            "is_running": True  # CLI launch implies the loop should immediately engage
+        }
+        if args.setpoint is not None:
+            init_payload["setpoint"] = args.setpoint
+        if args.trial_id:
+            init_payload["trial_id"] = args.trial_id
+
+        # Push state to C2 so the C2 server and future polls reflect these CLI flags
+        push_c2_configuration(args.c2_port, init_payload)
 
     runtime = ControllerRuntime(args)
     try:
@@ -254,7 +281,6 @@ def main() -> None:
             c2_proc.wait()
         if c2_log_file:
             c2_log_file.close()
-
 
 if __name__ == "__main__":
     main()

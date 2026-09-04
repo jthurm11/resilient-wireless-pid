@@ -60,7 +60,7 @@ class SimulatedPlant(BasePlant):
         self, 
         dt: float = 0.05, 
         tube_length_m: float = 0.50,    # 50 cm physical acrylic tube
-        ball_mass_kg: float = 0.0027,    # 2.7g standard ping pong ball
+        ball_mass_kg: float = 0.0027,   # 2.7g standard ping pong ball
         ball_radius_m: float = 0.020,   # 40mm diameter
         g: float = 9.80665
     ):
@@ -69,24 +69,25 @@ class SimulatedPlant(BasePlant):
         self.m = ball_mass_kg
         self.r = ball_radius_m
         self.g = g
-        
+
         # Aerodynamic constants (Air at 20°C: rho = 1.204 kg/m^3, Sphere Cd = 0.47)
         self.rho = 1.204
         self.cd = 0.47
         self.area = np.pi * (self.r ** 2)
-        
+
         # Fan dynamics: First-order motor response
-        # tau_fan: time to 63.2% max blower speed (~180ms electromechanical inertia)
-        self.tau_fan = 0.18
-        self.v_air_max = 8.8  # Max steady-state airflow velocity at 100% PWM (m/s)
-        
+        # tau_fan: time to 63.2% max blower speed (~150ms electromechanical inertia)
+        self.tau_fan = 0.15
+        # airflow: 14.0 m/s max velocity yields hover equilibrium at ~42-45% PWM
+        self.v_air_max = 14.0
+
         # State vector: [v_air (m/s), y_pos (m), v_ball (m/s)]
         self.state = np.array([0.0, 0.0, 0.0], dtype=np.float64)
-        
+
         # Mechanical boundaries & wall damping
         self.cor_bottom = 0.15  # Coefficient of restitution at wire mesh floor
         self.cor_top = 0.20     # Coefficient of restitution at top mesh restrictor
-        self.friction_coeff = 0.05  # Sliding/viscous friction along acrylic wall
+        self.friction_coeff = 0.04  # Sliding/viscous friction along acrylic wall
 
     def _dynamics(self, state: np.ndarray, u_clamped: float) -> np.ndarray:
         """
@@ -94,29 +95,31 @@ class SimulatedPlant(BasePlant):
         x = [v_air, y, v_ball]
         """
         v_air, y, v_ball = state
-        
-        # 1. Blower electromechanical lag
+
+        # Blower electromechanical lag
         target_v_air = (u_clamped / 100.0) * self.v_air_max
         d_v_air = (target_v_air - v_air) / self.tau_fan
-        
-        # 2. Pressure gradient drop near top exhaust (open tube end effect)
-        # Air velocity slightly diminishes toward the open exit
-        exhaust_loss = 1.0 - 0.15 * (y / self.L_tube)
-        effective_v_air = max(0.0, v_air * exhaust_loss)
-        
-        # 3. Aerodynamic drag computed from relative fluid velocity
+
+        # Ground effect: aerodynamic stagnation increases lift near the bottom mesh
+        ground_boost = 1.0 + 0.35 * np.exp(-y / 0.05)
+        # Exhaust effect: slight pressure drop near open top
+        exhaust_loss = 1.0 - 0.10 * (y / self.L_tube)
+
+        effective_v_air = max(0.0, v_air * ground_boost * exhaust_loss)
+
+        # Aerodynamic drag computed from relative fluid velocity
         v_rel = effective_v_air - v_ball
         f_aero = 0.5 * self.rho * self.cd * self.area * v_rel * abs(v_rel)
-        
+
         # 4. Net linear acceleration: a = (F_aero - F_gravity - F_wall) / m
         wall_friction = self.friction_coeff * v_ball
         accel = (f_aero / self.m) - self.g - wall_friction
-        
+
         # Prevent fictitious ground penetration when resting at mesh bottom
         if y <= 0.0 and accel < 0.0:
             accel = 0.0
             v_ball = 0.0
-            
+
         return np.array([d_v_air, v_ball, accel], dtype=np.float64)
 
     def step(self, u_t: float) -> float:
