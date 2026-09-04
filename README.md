@@ -90,6 +90,8 @@ graph TD
 - **Runtimes**: Python 3.10+, Docker Engine (for telemetry services), and `iproute2`.
 - **Privileges**: Elevated privileges (`sudo` or `CAP_NET_ADMIN`) for network namespace manipulations.
 
+> **Note on Virtual Testing:** To validate control routines and Linux `tc/netem` rules without physical hardware, refer to the [Proxmox LXC Mock Environment Guide](docs/development/proxmox_mock_environment.md).
+
 ### 1. Workspace Provisioning
 ```bash
 git clone [https://github.com/](https://github.com/)<your-username>/resilient-wireless-pid.git
@@ -140,8 +142,6 @@ tc qdisc show dev lo
 
 ```
 
-> **Note on Virtual Testing:** To validate control routines and Linux `tc/netem` rules without physical hardware, refer to the [Proxmox LXC Mock Environment Guide](docs/development/proxmox_mock_environment.md).
-
 ---
 
 ## Quickstart Trial
@@ -172,8 +172,9 @@ sudo tc qdisc del dev lo root
 
 This project is an advanced research continuation developed for the Master of Engineering Capstone at the University of Connecticut.
 
-* **Preceding Implementation**: System concepts, architectural foundations, and hardware-in-the-loop insights originated from [`jthurm11/iot-real-time-scheduler-evaluation`](https://www.google.com/search?q=https://github.com/jthurm11/iot-real-time-scheduler-evaluation).
-* **Physical Testbed Design**: Baseline physical plant and ball-floating topology adapted from the PingPongPID research testbed by [`Salzmann et al. (2025)`](https://www.google.com/search?g=salzmann).
+* **Preceding Implementation**: System concepts, architectural foundations, and hardware-in-the-loop insights originated from
+* [`jthurm11/iot-real-time-scheduler-evaluation`](https://github.com/jthurm11/iot-real-time-scheduler-evaluation).
+* **Physical Testbed Design**: Baseline physical plant and ball-floating topology adapted from the PingPongPID research testbed by [`Salzmann et al. (2025)`]([https://www.google.com/search?g=](https://www.google.com/search?q=salzmann).
 
 ## License
 
