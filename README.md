@@ -99,7 +99,7 @@ cd resilient-wireless-pid
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ### 2. Launch Telemetry Infrastructure
@@ -110,17 +110,17 @@ Execute the script with the `create` directive on the controller/historian node 
 
 ```bash
 # Provision InfluxDB v2 and Grafana instances
-./scripts/infra/telemetry_stack.sh create
+bash ./scripts/infra/telemetry_stack.sh create
 ```
 
 To view runtime container health or purge instances to perform a clean re-initialization:
 
 ```bash
 # Inspect container health and port bindings
-./scripts/infra/telemetry_stack.sh status
+bash ./scripts/infra/telemetry_stack.sh status
 
 # Stop and purge telemetry containers and networks
-./scripts/infra/telemetry_stack.sh destroy
+bash ./scripts/infra/telemetry_stack.sh destroy
 ```
 
 ### 3. Verify Traffic Control Capabilities
@@ -139,22 +139,28 @@ tc qdisc show dev lo
 
 ## Quickstart Trial
 
-Validate the synthetic plant, kernel network emulation, and InfluxDB telemetry pipeline in a dry run:
+### 1. Plant node: Start the plant socket server 
 
 ```bash
-# 1. Export authentication credentials
+run-plant --host 0.0.0.0 --port 5005
+```
+
+### 2. Controller node: Validate kernel network emulation, and InfluxDB telemetry pipeline
+
+```bash
+# Export authentication credentials
 export INFLUXDB_URL="http://localhost:8086"
 export INFLUXDB_TOKEN="testbed_secret_token_123"
 export INFLUXDB_ORG="resilient_pid"
 export INFLUXDB_BUCKET="wireless_pid_metrics"
 
-# 2. Inject synthetic network jitter (50ms base delay +/- 15ms Gaussian jitter)
+# Inject synthetic network jitter (50ms base delay +/- 15ms Gaussian jitter)
 sudo tc qdisc add dev lo root netem delay 50ms 15ms distribution normal
 
-# 3. Execute the automated calibration trial (500 steps @ dt=0.05s)
-python3 src/controller/pid_runner.py --mode baseline --steps 500
+# Execute the automated calibration trial (500 steps @ dt=0.05s)
+run-controller --mode baseline --target-host 10.10.10.2 --target-port 5005 --steps 500
 
-# 4. Tear down the kernel emulation rules
+# Tear down the kernel emulation rules
 sudo tc qdisc del dev lo root
 ```
 

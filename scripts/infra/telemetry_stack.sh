@@ -20,6 +20,7 @@ TAB="  "
 NETWORK_NAME="pid-telemetry-net"
 INFLUX_CONTAINER="influxdb"
 GRAFANA_CONTAINER="grafana"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 header_info() {
   cat <<"EOF"
@@ -107,6 +108,9 @@ create_stack() {
     --network "$NETWORK_NAME" \
     --restart unless-stopped \
     -p 3000:3000 \
+    -v "${REPO_ROOT}/configs/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro" \
+    -v "${REPO_ROOT}/configs/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro" \
+    -v "${REPO_ROOT}/configs/grafana/dashboards:/var/lib/grafana/dashboards:ro" \
     grafana/grafana-oss:latest >/dev/null 2>&1
   msg_ok "Grafana UI online (http://localhost:3000)"
 

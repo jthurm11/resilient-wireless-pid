@@ -1,1 +1,13 @@
+# Telemetry and Observability Engine
+influxdb-client>=1.36.0
 
+# Numerical Simulation and Scientific Computing
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Data Export, Parsing, and Analysis
+pandas>=2.0.0
+pyarrow>=12.0.0
+
+# Interactive Plotting (used in development notebooks)
+matplotlib>=3.7.0

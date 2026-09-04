@@ -10,15 +10,18 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Jacob Thurman", email = "your.email@uconn.edu"}
+    {name = "Jacob Thurman", email = "jacob.thurman@uconn.edu"}
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering",
+    "Intended Audience :: Science/Research",
 ]
 dependencies = [
     "influxdb-client>=1.36.0",
     "numpy>=1.24.0",
+    "scipy>=1.10.0",
     "pandas>=2.0.0",
 ]
 
@@ -26,5 +29,10 @@ dependencies = [
 Homepage = "https://github.com/jthurm11/resilient-wireless-pid"
 
 [project.scripts]
-# This defines terminal commands that automatically link to your python code on the Pi
 run-controller = "resilient_pid.main:main"
+run-plant = "resilient_pid.plant.simulated_plant:main"
+run-c2 = "resilient_pid.c2.c2_server:main"
+run-netem = "resilient_pid.emulation.traffic_control:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
