@@ -204,21 +204,42 @@ class ControllerRuntime:
                 next_tick = time.perf_counter()
 
 
+def sync_c2_ui_preference(port: int, enable_ui: bool) -> None:
+    """Explicitly toggle the C2 server UI state via REST IPC."""
+    try:
+        requests.post(
+            f"http://127.0.0.1:{port}/api/control",
+            json={"ui_enabled": enable_ui},
+            timeout=1.0
+        )
+    except requests.RequestException:
+        pass
+
+
 def main() -> None:
     args = parse_args()
     c2_proc = None
+    c2_log_file = None
 
-    # Determine if C2 needs to be spawned
+    # Handle C2 lifecycle and UI synchronization
     if not args.no_c2:
         if is_port_in_use(args.c2_port):
-            logger.info("Existing C2 service detected on port %d. Connecting...", args.c2_port)
+            logger.info("Existing C2 server detected on port %d. Synchronizing UI preference...", args.c2_port)
+            sync_c2_ui_preference(args.c2_port, args.enable_ui)
         else:
-            logger.info("Port %d vacant. Spawning background C2 process...", args.c2_port)
+            logger.info("Port %d vacant. Spawning background C2 process (logs -> /tmp/c2_server.log)...", args.c2_port)
+            c2_log_file = open("/tmp/c2_server.log", "a")
             cmd = [sys.executable, "-m", "resilient_pid.c2.c2_server", "--port", str(args.c2_port)]
             if args.enable_ui:
                 cmd.append("--enable-ui")
-            c2_proc = subprocess.Popen(cmd)
-            time.sleep(1.0)
+
+            # Route subprocess standard streams away from current terminal
+            c2_proc = subprocess.Popen(
+                cmd,
+                stdout=c2_log_file,
+                stderr=c2_log_file
+            )
+            time.sleep(1.0)  # Yield to permit socket bind
 
     runtime = ControllerRuntime(args)
     try:
@@ -231,6 +252,8 @@ def main() -> None:
             logger.info("Terminating spawned C2 background process...")
             c2_proc.terminate()
             c2_proc.wait()
+        if c2_log_file:
+            c2_log_file.close()
 
 
 if __name__ == "__main__":
