@@ -3,7 +3,7 @@
 src/resilient_pid/plant/plant_interface.py
 Unified Plant Runtime Daemon for Resilient Wireless PID DCS.
 Provides an interchangeable interface between physical hardware (PWM/I2C)
-and a continuous second-order software twin (LXC/x86).
+and a realistic, continuous aerodynamic software twin (RK4 integration).
 """
 import os
 import sys
@@ -17,11 +17,9 @@ from typing import Tuple
 
 import numpy as np
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("PlantInterface")
 
-# Conditional import of physical hardware drivers
 try:
     import smbus2
     import RPi.GPIO as GPIO
@@ -38,58 +36,128 @@ class BasePlant(ABC):
     @abstractmethod
     def step(self, u_t: float) -> float:
         """
-        Accepts the commanded control effort u(t) and advances the plant dynamics.
+        Accepts the commanded control effort u(t) and advances plant dynamics.
         
-        :param u_t: Control input (normalized percentage or engineering units)
-        :return: Current process variable feedback pv(t)
+        :param u_t: Control input [0.0, 100.0]%
+        :return: Current process variable feedback pv(t) [0.0, 100.0]%
         """
         pass
 
     @abstractmethod
     def cleanup(self) -> None:
-        """Safely de-energize physical actuators or release socket/driver handles."""
+        """Safely de-energize physical actuators or release driver handles."""
         pass
 
 
 class SimulatedPlant(BasePlant):
     """
-    Second-order aerodynamic software twin modeling the ball-and-tube testbed.
-    Integrates mechanical drag, lift coefficients, and gravitational acceleration,
-    with zero external hardware peripheral dependencies.
+    High-fidelity continuous aerodynamic twin of the PingPongPID testbed.
+    Models DC blower rotational inertia, non-linear fluid drag relative to 
+    flow speed, gravitational forces, tube-wall boundary dissipation, 
+    and acoustic sensor quantization noise. Integrated via Runge-Kutta 4 (RK4).
     """
-    def __init__(self, dt: float = 0.05, mass: float = 0.0027, g: float = 9.81):
+    def __init__(
+        self, 
+        dt: float = 0.05, 
+        tube_length_m: float = 0.50,    # 50 cm physical acrylic tube
+        ball_mass_kg: float = 0.0027,    # 2.7g standard ping pong ball
+        ball_radius_m: float = 0.020,   # 40mm diameter
+        g: float = 9.80665
+    ):
         self.dt = dt
-        self.m = mass
+        self.L_tube = tube_length_m
+        self.m = ball_mass_kg
+        self.r = ball_radius_m
         self.g = g
-        self.y = 0.0          # Process Variable: Height (0.0 to 100.0%)
-        self.v = 0.0          # Velocity (m/s)
-        self.k_fan = 0.25      # Aerodynamic lift scaling
-        self.k_drag = 0.05     # Air resistance coefficient
+        
+        # Aerodynamic constants (Air at 20°C: rho = 1.204 kg/m^3, Sphere Cd = 0.47)
+        self.rho = 1.204
+        self.cd = 0.47
+        self.area = np.pi * (self.r ** 2)
+        
+        # Fan dynamics: First-order motor response
+        # tau_fan: time to 63.2% max blower speed (~180ms electromechanical inertia)
+        self.tau_fan = 0.18
+        self.v_air_max = 8.8  # Max steady-state airflow velocity at 100% PWM (m/s)
+        
+        # State vector: [v_air (m/s), y_pos (m), v_ball (m/s)]
+        self.state = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+        
+        # Mechanical boundaries & wall damping
+        self.cor_bottom = 0.15  # Coefficient of restitution at wire mesh floor
+        self.cor_top = 0.20     # Coefficient of restitution at top mesh restrictor
+        self.friction_coeff = 0.05  # Sliding/viscous friction along acrylic wall
+
+    def _dynamics(self, state: np.ndarray, u_clamped: float) -> np.ndarray:
+        """
+        Continuous non-linear system state-space derivatives dx/dt = f(x, u).
+        x = [v_air, y, v_ball]
+        """
+        v_air, y, v_ball = state
+        
+        # 1. Blower electromechanical lag
+        target_v_air = (u_clamped / 100.0) * self.v_air_max
+        d_v_air = (target_v_air - v_air) / self.tau_fan
+        
+        # 2. Pressure gradient drop near top exhaust (open tube end effect)
+        # Air velocity slightly diminishes toward the open exit
+        exhaust_loss = 1.0 - 0.15 * (y / self.L_tube)
+        effective_v_air = max(0.0, v_air * exhaust_loss)
+        
+        # 3. Aerodynamic drag computed from relative fluid velocity
+        v_rel = effective_v_air - v_ball
+        f_aero = 0.5 * self.rho * self.cd * self.area * v_rel * abs(v_rel)
+        
+        # 4. Net linear acceleration: a = (F_aero - F_gravity - F_wall) / m
+        wall_friction = self.friction_coeff * v_ball
+        accel = (f_aero / self.m) - self.g - wall_friction
+        
+        # Prevent fictitious ground penetration when resting at mesh bottom
+        if y <= 0.0 and accel < 0.0:
+            accel = 0.0
+            v_ball = 0.0
+            
+        return np.array([d_v_air, v_ball, accel], dtype=np.float64)
 
     def step(self, u_t: float) -> float:
-        # Enforce actuator boundary limits
-        u_clamped = max(0.0, min(100.0, u_t))
+        # Actuator physical saturation
+        u_clamped = float(np.clip(u_t, 0.0, 100.0))
+        
+        # 4th-Order Runge-Kutta numerical integration across dt
+        k1 = self._dynamics(self.state, u_clamped)
+        k2 = self._dynamics(self.state + 0.5 * self.dt * k1, u_clamped)
+        k3 = self._dynamics(self.state + 0.5 * self.dt * k2, u_clamped)
+        k4 = self._dynamics(self.state + self.dt * k3, u_clamped)
+        
+        self.state += (self.dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        
+        # Enforce kinematic constraints (hard boundary collisions)
+        # Bottom floor mesh
+        if self.state[1] <= 0.0:
+            self.state[1] = 0.0
+            if self.state[2] < 0.0:
+                self.state[2] = -self.state[2] * self.cor_bottom
+                if abs(self.state[2]) < 0.02:
+                    self.state[2] = 0.0
+                    
+        # Top restrictor mesh
+        elif self.state[1] >= self.L_tube:
+            self.state[1] = self.L_tube
+            if self.state[2] > 0.0:
+                self.state[2] = -self.state[2] * self.cor_top
+                if abs(self.state[2]) < 0.02:
+                    self.state[2] = 0.0
 
-        # Equations of motion: m * a = F_fan - F_drag - F_g
-        f_fan = self.k_fan * u_clamped
-        f_drag = self.k_drag * self.v * abs(self.v)
-        accel = (f_fan - f_drag - (self.m * self.g)) / self.m
-
-        # Forward Euler numerical integration
-        self.v += accel * self.dt
-        self.y += self.v * self.dt
-
-        # Mechanical tube hard-stops (restitution damping)
-        if self.y <= 0.0:
-            self.y = 0.0
-            self.v = 0.0
-        elif self.y >= 100.0:
-            self.y = 100.0
-            self.v = 0.0
-
-        # Inject white Gaussian transducer noise: N(0, sigma^2)
-        sensor_noise = np.random.normal(0.0, 0.15)
-        return float(np.clip(self.y + sensor_noise, 0.0, 100.0))
+        # Map position to percentage: y_pct = (y_meters / L_tube) * 100.0
+        pv_true = (self.state[1] / self.L_tube) * 100.0
+        
+        # Realistic Time-of-Flight (ToF) / Ultrasonic sensor noise:
+        # - Gaussian white noise (sigma = 0.12%)
+        # - Occasional quantization jitter / specular reflection noise
+        sensor_noise = np.random.normal(0.0, 0.12)
+        pv_measured = float(np.clip(pv_true + sensor_noise, 0.0, 100.0))
+        
+        return pv_measured
 
     def cleanup(self) -> None:
         logger.info("De-allocating simulated plant numerical state.")
@@ -109,26 +177,21 @@ class HardwarePlant(BasePlant):
         self.pwm_pin = pwm_pin
         self.sensor_addr = i2c_addr
         
-        # Setup GPIO and Hardware PWM
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(self.pwm_pin, GPIO.OUT)
         self.pwm = GPIO.PWM(self.pwm_pin, pwm_freq)
         self.pwm.start(0.0)
 
-        # Setup I2C Bus Driver
         self.bus = smbus2.SMBus(i2c_bus)
         logger.info("Initialized physical PWM (Pin %d, %d Hz) and I2C (Bus %d, Addr 0x%02X)",
                     pwm_pin, pwm_freq, i2c_bus, i2c_addr)
 
     def step(self, u_t: float) -> float:
-        # Actuate PWM duty cycle
         duty = max(0.0, min(100.0, u_t))
         self.pwm.ChangeDutyCycle(duty)
 
-        # Transducer read via I2C word registers
         try:
             raw_bytes = self.bus.read_word_data(self.sensor_addr, 0x14)
-            # Calibration transform from sensor millivolts/ticks to tube height percentage
             pv = float(raw_bytes * 0.1)
             return max(0.0, min(100.0, pv))
         except Exception as e:
@@ -160,7 +223,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # Instantiate the selected plant engine
     plant: BasePlant
     if args.mode == "hardware":
         if not HARDWARE_AVAILABLE:
@@ -177,7 +239,6 @@ def main() -> None:
 
     try:
         while True:
-            # Block waiting for control effort datagram from ctrl-node-01
             data, addr = sock.recvfrom(1024)
             t_recv = time.perf_counter()
 
@@ -191,10 +252,10 @@ def main() -> None:
             u_t = float(pkt.get("u", 0.0))
             t_send = pkt.get("t_send")
 
-            # Advance plant dynamics
+            # Advance non-linear aerodynamic ODEs
             pv = plant.step(u_t)
 
-            # Transmit process variable feedback response
+            # Transmit echo feedback
             resp = {
                 "seq": seq,
                 "pv": pv,

@@ -9,9 +9,9 @@
   "panels": [
     {
       "collapsed": false,
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
       "id": 1,
-      "title": "Discrete PID Response (SP vs PV)",
+      "title": "Process Variable (PV) vs Setpoint (SP)",
       "type": "timeseries",
       "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
       "fieldConfig": {
@@ -20,54 +20,78 @@
             "drawStyle": "line",
             "lineInterpolation": "linear",
             "lineWidth": 2,
-            "pointSize": 5,
             "showPoints": "never"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "setpoint" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "process_variable" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          }
+        ]
       },
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\" or r[\"_field\"] == \"setpoint\")\n  |> yield(name: \"pv_sp\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\" or r[\"_field\"] == \"setpoint\")\n  |> yield(name: \"tracking\")"
         }
       ]
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 8 },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 9 },
       "id": 2,
-      "title": "Control Effort u(t)",
+      "title": "Actuator Output u(t)",
       "type": "timeseries",
       "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
       "fieldConfig": {
-        "defaults": {
-          "custom": { "drawStyle": "line", "lineWidth": 1 }
-        }
+        "defaults": { "custom": { "drawStyle": "line", "lineWidth": 1 } }
       },
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"control_effort\")\n  |> yield(name: \"u_t\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"control_signal\")\n  |> yield(name: \"u_t\")"
         }
       ]
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 8 },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 9 },
       "id": 3,
-      "title": "Observed Network RTT (s)",
+      "title": "Network Transport Latency (RTT ms)",
       "type": "timeseries",
       "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
       "fieldConfig": {
         "defaults": {
-          "custom": { "drawStyle": "line", "lineWidth": 1 }
+          "custom": { "drawStyle": "line", "lineWidth": 1 },
+          "unit": "ms"
         }
       },
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt\")\n  |> yield(name: \"rtt\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt_ms\")\n  |> yield(name: \"rtt\")"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 9 },
+      "id": 4,
+      "title": "Control Tracking Error",
+      "type": "timeseries",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "lineWidth": 1 } }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> yield(name: \"err\")"
         }
       ]
     }
@@ -75,9 +99,8 @@
   "refresh": "1s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["dcs", "pid"],
-  "time": { "from": "now-1m", "to": "now" },
-  "timepicker": { "refresh_intervals": ["500ms", "1s", "5s"] },
+  "tags": ["dcs", "pid", "capstone"],
+  "time": { "from": "now-2m", "to": "now" },
   "timezone": "browser",
   "title": "Wireless PID Telemetry Dashboard",
   "uid": "pid-telemetry-eval"
