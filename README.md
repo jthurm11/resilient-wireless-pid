@@ -172,9 +172,8 @@ sudo tc qdisc del dev lo root
 
 This project is an advanced research continuation developed for the Master of Engineering Capstone at the University of Connecticut.
 
-* **Preceding Implementation**: System concepts, architectural foundations, and hardware-in-the-loop insights originated from
-* [`jthurm11/iot-real-time-scheduler-evaluation`](https://github.com/jthurm11/iot-real-time-scheduler-evaluation).
-* **Physical Testbed Design**: Baseline physical plant and ball-floating topology adapted from the PingPongPID research testbed by [`Salzmann et al. (2025)`]([https://www.google.com/search?g=](https://www.google.com/search?q=salzmann).
+* **Preceding Implementation**: System concepts, architectural foundations, and hardware-in-the-loop insights originated from [`jthurm11/iot-real-time-scheduler-evaluation`](https://github.com/jthurm11/iot-real-time-scheduler-evaluation).
+* **Physical Testbed Design**: Baseline physical plant and ball-floating topology adapted from the PingPongPID research testbed by [`Salzmann (2025)`](https://doi.org/10.1021/acs.jchemed.5c00528).
 
 ## License
 
