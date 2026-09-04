@@ -73,12 +73,12 @@ configure_host_kernel() {
 }
 
 configure_host_network() {
-  msg_info "Checking isolated Linux bridge (vmbr1)"
-  if ! grep -q "iface vmbr1" /etc/network/interfaces; then
+  msg_info "Checking isolated Linux bridge (vmbr2)"
+  if ! grep -q "iface vmbr2" /etc/network/interfaces; then
     cat <<EOF >> /etc/network/interfaces
 
-auto vmbr1
-iface vmbr1 inet manual
+auto vmbr2
+iface vmbr2 inet manual
         bridge-ports none
         bridge-stp off
         bridge-fd 0
@@ -89,9 +89,9 @@ EOF
     else
       systemctl restart networking
     fi
-    msg_ok "Isolated bridge vmbr1 provisioned"
+    msg_ok "Isolated bridge vmbr2 provisioned"
   else
-    msg_ok "Bridge vmbr1 is already configured"
+    msg_ok "Bridge vmbr2 is already configured"
   fi
 }
 
@@ -134,7 +134,7 @@ create_container() {
     --swap 512 \
     --features nesting=1,keyctl=1 \
     --net0 name=eth0,bridge=vmbr0,ip=dhcp \
-    --net1 name=eth1,bridge=vmbr1,ip="${internal_ip}/24" \
+    --net1 name=eth1,bridge=vmbr2,ip="${internal_ip}/24" \
     --storage "$STORAGE" \
     --rootfs volume="${STORAGE}:8" \
     --unprivileged 0 >/dev/null 2>&1
