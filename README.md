@@ -40,7 +40,6 @@ The testbed decouples real-time embedded control execution from human telemetry 
 | Command & Control (C2) Interface  |
 | (React Operator Dashboard)        |
 +-----------------------------------+
-
 ```
 ```mermaid
 graph TD
@@ -85,7 +84,7 @@ graph TD
 ## Setup & Prerequisites
 
 ### Requirements
-- **Host OS**: Debian 12 (Bookworm), Ubuntu 22.04/24.04 LTS, or Raspberry Pi OS (64-bit).
+- **Host OS**: Debian 13 (Trixie) or Raspberry Pi OS (64-bit).
 - **Kernel Modules**: `sch_netem`, `cls_u32` loaded into the active kernel.
 - **Runtimes**: Python 3.10+, Docker Engine (for telemetry services), and `iproute2`.
 - **Privileges**: Elevated privileges (`sudo` or `CAP_NET_ADMIN`) for network namespace manipulations.
@@ -101,58 +100,52 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
-
 ```
 
 ### 2. Launch Telemetry Infrastructure
 
-Deploy an InfluxDB v2 instance and Grafana container locally via Docker:
+The time-series observability stack runs as containerized microservices managed through a local automation wrapper. 
+
+Execute the script with the `create` directive on the controller/historian node to provision the bridge network, spin up InfluxDB v2, configure access tokens, and deploy Grafana:
 
 ```bash
-docker network create pid-telemetry-net
+# Provision InfluxDB v2 and Grafana instances
+./scripts/infra/telemetry_stack.sh create
+```
 
-docker run -d --name influxdb \
-  --network pid-telemetry-net \
-  -p 8086:8086 \
-  -e DOCKER_INFLUXDB_INIT_MODE=setup \
-  -e DOCKER_INFLUXDB_INIT_USERNAME=admin \
-  -e DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword \
-  -e DOCKER_INFLUXDB_INIT_ORG=uconn_meng \
-  -e DOCKER_INFLUXDB_INIT_BUCKET=wireless_pid_metrics \
-  -e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=testbed_secret_token_123 \
-  influxdb:2.7
+To view runtime container health or purge instances to perform a clean re-initialization:
 
-docker run -d --name grafana \
-  --network pid-telemetry-net \
-  -p 3000:3000 \
-  grafana/grafana-oss:latest
+```bash
+# Inspect container health and port bindings
+./scripts/infra/telemetry_stack.sh status
 
+# Stop and purge telemetry containers and networks
+./scripts/infra/telemetry_stack.sh destroy
 ```
 
 ### 3. Verify Traffic Control Capabilities
 
-Confirm the host networking stack permits queueing discipline attachment:
+Confirm that the active Linux kernel has loaded the network emulation scheduler and exposes netlink queueing discipline manipulation:
 
 ```bash
-# Verify netem module is present
+# Verify netem kernel module is active
 sudo modprobe sch_netem
 
-# Inspect active qdisc on the primary loopback or ethernet interface
+# Inspect active qdisc on loopback or inter-node DCS interface
 tc qdisc show dev lo
-
 ```
 
 ---
 
 ## Quickstart Trial
 
-Validate the software plant simulation, kernel netem injection, and metric pipeline in a dry run:
+Validate the synthetic plant, kernel network emulation, and InfluxDB telemetry pipeline in a dry run:
 
 ```bash
 # 1. Export authentication credentials
 export INFLUXDB_URL="http://localhost:8086"
 export INFLUXDB_TOKEN="testbed_secret_token_123"
-export INFLUXDB_ORG="uconn_meng"
+export INFLUXDB_ORG="resilient_pid"
 export INFLUXDB_BUCKET="wireless_pid_metrics"
 
 # 2. Inject synthetic network jitter (50ms base delay +/- 15ms Gaussian jitter)
@@ -163,7 +156,6 @@ python3 src/controller/pid_runner.py --mode baseline --steps 500
 
 # 4. Tear down the kernel emulation rules
 sudo tc qdisc del dev lo root
-
 ```
 
 ---

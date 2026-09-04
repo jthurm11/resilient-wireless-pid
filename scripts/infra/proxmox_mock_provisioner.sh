@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 
-# ------------------------------------------------------------------------------
-# Setup Script: Resilient Wireless Control DCS Testbed (Proxmox VE)
+# -----------------------------------------------------------------------------
+# Script: scripts/infra/proxmox_mock_provisioner.sh
 # Target OS: Debian 13 (Trixie)
 # Nodes: CT 201 (Controller + Telemetry Stack), CT 202 (Plant Node)
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 
 set -Eeuo pipefail
 
-# Style & Formatting (Proxmox Helper Scripts Theme)
+# Style & Formatting
 YW=$(echo "\033[33m")
 BL=$(echo "\033[36m")
 RD=$(echo "\033[01;31m")
@@ -20,31 +20,19 @@ TAB="  "
 header_info() {
   clear
   cat <<"EOF"
-    ____           _ _ _            __     _       _         ____ ___ ____  
-   / __ \___  ____(_) (_)__  ____  / /_   | |     / /___    / __ \__ \__ \ 
-  / /_/ / _ \/ ___/ / / / _ \/ __ \/ __/   | | /| / / __ \  / /_/ /_/ /_/ / 
- / _, _/  __(__  ) / / /  __/ / / / /_     | |/ |/ / /_/ / / ____/ __// __/  
-/_/ |_|\___/____/_/_/_/\___/_/ /_/\__/     |__/|__/ .___/ /_/   /____/____/   
-                                                 /_/                          
+    ____            _ _ _            __     ____  ________ 
+   / __ \___  _____(_) (_)__  ____  / /_   / __ \/  _/ __ \
+  / /_/ / _ \/ ___/ / / / _ \/ __ \/ __/  / /_/ // // / / /
+ / _, _/  __(__  ) / / /  __/ / / / /_   / ____// // /_/ / 
+/_/ |_|\___/____/_/_/_/\___/_/ /_/\__/  /_/   /___/_____/  
+                                                           
 EOF
   echo -e "${BL}${BOLD}Distributed Control System - Mock Testbed Provisioner${CL}\n"
 }
 
-msg_info() {
-  local msg="$1"
-  echo -ne "${TAB}${YW}[INFO]${CL} ${msg}..."
-}
-
-msg_ok() {
-  local msg="$1"
-  echo -e "\r\033[K${TAB}${GN}[OK]${CL} ${msg}"
-}
-
-msg_error() {
-  local msg="$1"
-  echo -e "\r\033[K${TAB}${RD}[ERROR]${CL} ${msg}"
-  exit 1
-}
+msg_info()  { local msg="$1"; echo -ne "${TAB}${YW}[INFO]${CL} ${msg}..."; }
+msg_ok()    { local msg="$1"; echo -e "\r\033[K${TAB}${GN}[OK]${CL} ${msg}"; }
+msg_error() { local msg="$1"; echo -e "\r\033[K${TAB}${RD}[ERROR]${CL} ${msg}"; exit 1; }
 
 # Pre-flight Hypervisor Checks
 check_root() {
@@ -206,6 +194,6 @@ create_container 202 "plant-node-01" "10.10.10.2"
 setup_container_base 202
 
 echo -e "\n${GN}${BOLD}Environment Setup Complete!${CL}"
-echo -e "${TAB}${BOLD}Node 1 (Controller/Historian):${CL} CT 201 | eth1: 10.10.10.1/24 (Docker Ready)"
-echo -e "${TAB}${BOLD}Node 2 (Plant / Actuator):   ${CL} CT 202 | eth1: 10.10.10.2/24"
+echo -e "${TAB}${BOLD}Node 1 (Controller / Historian):${CL} CT 201 | eth1: 10.10.10.1/24 (Docker Ready)"
+echo -e "${TAB}${BOLD}Node 2 (Plant / Actuator):      ${CL} CT 202 | eth1: 10.10.10.2/24"
 echo -e "${TAB}${BL}Attach using:${CL} pct enter 201  ${BL}or${CL}  pct enter 202\n"

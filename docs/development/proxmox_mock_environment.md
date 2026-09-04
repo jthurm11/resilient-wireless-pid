@@ -38,14 +38,14 @@ From the **Proxmox VE Host root shell**, run:
 > The following command prevents you from reading the code before executing it on your system. Please review the code before installation.  
 
 ```bash
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/jthurm11/resilient-wireless-pid/main/scripts/infra/proxmox_provision_mock.sh)"
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/jthurm11/resilient-wireless-pid/main/scripts/infra/proxmox_mock_provisioner.sh)"
 ```
 
-## Option 2: Manually download the provisioner and run
+### Option 2: Manually download the provisioner and run
 
 ```bash
-wget -q https://raw.githubusercontent.com/jthurm11/resilient-wireless-pid/main/scripts/infra/proxmox_provision_mock.sh 
-bash proxmox_provision_mock.sh
+wget -q https://raw.githubusercontent.com/jthurm11/resilient-wireless-pid/main/scripts/infra/proxmox_mock_provisioner.sh 
+bash proxmox_mock_provisioner.sh
 ```
 
 ### What the Provisioner Configures Automatically
