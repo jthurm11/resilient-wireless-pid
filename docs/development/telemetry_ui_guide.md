@@ -1,67 +1,88 @@
+### 2. `docs/development/telemetry_ui_guide.md`
+
+```markdown
 # Telemetry Web Interfaces Manual (InfluxDB v2 & Grafana)
 
-This document details baseline access, verification, and manual dashboard operations for the project telemetry layer.
+This document specifies endpoint connectivity, automated provisioning, and operational workflows for the project's time-series observability tier. 
 
 ---
 
 ## 1. Service Endpoints & Authentication
 
-All services execute on the controller/historian node. Replace `<NODE1_IP>` with your node's routable management IP.
+All observability services reside on `dcs-ctrl-node` (Node 1). When running under local Docker, services bind to `localhost`. When running in Proxmox LXC (CT 201), bind to the container's external management IP (`eth0`). 
 
-| Service | URL | Credentials | Context / Params |
-| :--- | :--- | :--- | :--- |
-| **InfluxDB v2** | `http://<NODE1_IP>:8086` | `admin` / `adminpassword` | **Org:** `resilient_pid`<br>**Bucket:** `wireless_pid_metrics` |
-| **Grafana** | `http://<NODE1_IP>:3000` | `admin` / `admin` | Auto-provisions from `configs/grafana/` |
-
----
-
-## 2. InfluxDB Operations (Ad-Hoc Querying)
-
-Use InfluxDB directly for rapid ingest validation and raw time-series inspection.
-
-1. **Access Explorer**: Navigate to `http://<NODE1_IP>:8086` and select **Data Explorer** (graph icon on the left rail).
-2. **Query Builder**:
-   * **Bucket**: Select `wireless_pid_metrics`.
-   * **_measurement**: Select `control_telemetry`.
-   * **_field**: Check `process_variable`, `setpoint`, and `control_effort`.
-3. **Inspect Output**: Choose a target inspection window (e.g., `Past 5m`) and click **Submit**.
-4. **Script Mode (Flux)**: Click **Script Editor** to isolate metrics by specific experimental trial runs:
-   ```flux
-   from(bucket: "wireless_pid_metrics")
-     |> range(start: -5m)
-     |> filter(fn: (r) => r["_measurement"] == "control_telemetry")
-     |> filter(fn: (r) => r["trial_id"] =~ /smoke_test/)
-     |> yield(name: "trial_filtered")
-
-    ```
+| Service | Address (Docker) | Address (Proxmox CT 201) | Credentials | Context / Defaults |
+| :--- | :--- | :--- | :--- | :--- |
+| **InfluxDB v2** | `http://localhost:8086` | `http://<NODE1_IP>:8086` | `admin` / `adminpassword` | **Org:** `resilient_pid`<br>**Bucket:** `wireless_pid_metrics` |
+| **Grafana** | `http://localhost:3000` | `http://<NODE1_IP>:3000` | `admin` / `admin` | Auto-provisioned from `configs/grafana/` |
+| **C2 Console** | `http://localhost:5000` | `http://<NODE1_IP>:5000` | None (Open REST/UI) | Supervisory control and state store |
 
 ---
 
-## 3. Grafana Operations
+## 2. Infrastructure Automation (`telemetry_stack.sh`)
 
-Grafana automatically links the InfluxDB datasource and imports dashboard models on service initialization via `configs/grafana/`.
+When running inside Proxmox CT 201 or directly on bare-metal hardware, the telemetry services are managed through `scripts/infra/telemetry_stack.sh` (which wraps `deploy/docker/telemetry-compose.yml`).
 
-### 3.1 Viewing Provisioned Dashboards
+```bash
+# Provision or update InfluxDB v2 and Grafana
+./scripts/infra/telemetry_stack.sh create
 
-1. Log in at `http://<NODE1_IP>:3000` (`admin` / `admin`).
-2. Navigate to **Dashboards** in the left navigation menu.
-3. Open the **Control Systems** folder and select **Wireless PID Telemetry Dashboard**.
-4. Set the top-right time picker to **Last 1 minute** and configure the refresh interval to **1s**.
+# Inspect container health and exposed ports
+./scripts/infra/telemetry_stack.sh status
 
-### 3.2 Dashboard Model Synchronization
+# Stop containers and purge volumes
+./scripts/infra/telemetry_stack.sh destroy
 
-To persist modifications made in the Grafana UI back to source control:
+# Optional: Run quietly without ASCII headers
+./scripts/infra/telemetry_stack.sh status --no-header
 
-* **Export Dashboard to Repository**:
-    1. Open the active dashboard view.
-    2. Click **Dashboard Settings** (gear icon in the top utility bar).
-    3. Select **JSON Model** in the left navigation rail.
-    4. Copy the complete JSON structure and overwrite `configs/grafana/dashboards/dcs_pid_dashboard.json`.
-    5. Commit the modified template to Git.
+```
+
+---
+
+## 3. InfluxDB Operations (Ad-Hoc Querying)
+
+Use InfluxDB directly for fast data verification, raw metric inspection, and debugging packet ingestion.
+
+1. **Access Explorer**: Log in at port `8086`, then select **Data Explorer** (graph icon on the left rail). 
+2. **Query Builder**: 
+    * **Bucket**: Select `wireless_pid_metrics`. 
+    * **_measurement**: Select `control_telemetry`. 
+    * **_field**: Select `process_variable`, `setpoint`, and `control_effort` (or `control_signal`). 
+3. **Inspect Output**: Select a target window (e.g., `Past 5m`) and click **Submit**. 
+4. **Script Mode (Flux)**: Click **Script Editor** to query specific experimental trial IDs: 
+
+```flux
+from(bucket: "wireless_pid_metrics")
+  |> range(start: -5m)
+  |> filter(fn: (r) => r["_measurement"] == "control_telemetry")
+  |> filter(fn: (r) => r.trial_id =~ /eval_trial/)
+  |> yield(name: "trial_filtered")
+
+```
+
+---
+
+## 4. Grafana Operations
+
+Grafana is pre-configured via declarative provisioning files located in `configs/grafana/`: 
+
+* **Datasources:** Linked automatically to InfluxDB via `configs/grafana/provisioning/datasources/influxdb.yaml`. 
+* **Dashboards:** Provisioned automatically from `configs/grafana/dashboards/` on container boot. 
+
+### 4.1 Viewing Dashboards
+
+1. Log in at port `3000` (`admin` / `admin`). 
+2. Select **Dashboards** in the left sidebar. 
+3. Open the **Control Systems** folder and select the **Wireless PID Telemetry Dashboard**. 
+4. Set the top-right time window to **Last 1 minute** and set auto-refresh to **1s**. 
 
 
-* **Manual Import into an Ad-Hoc Instance**:
-    1. Navigate to **Dashboards > New > Import**.
-    2. Upload the exported `.json` file or paste the raw JSON schema directly into the panel.
-    3. Map the target InfluxDB datasource dropdown to `InfluxDB_Flux` and select **Import**. 
+### 4.2 Persisting Dashboard Updates to Git
 
+If you modify dashboard panels or threshold configurations in the UI, export your changes to version control: 
+
+1. Click **Dashboard Settings** (gear icon in the top toolbar). 
+2. Click **JSON Model** in the left settings menu. 
+3. Copy the JSON object and overwrite `configs/grafana/dashboards/dcs_pid_dashboard.json`. 
+4. Commit the updated JSON schema to Git. 

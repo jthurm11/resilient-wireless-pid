@@ -1,0 +1,44 @@
+version: "3.8"
+
+networks:
+  pid-telemetry-net:
+    name: pid-telemetry-net
+    driver: bridge
+
+services:
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    restart: unless-stopped
+    networks:
+      - pid-telemetry-net
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
+      - DOCKER_INFLUXDB_INIT_ORG=resilient_pid
+      - DOCKER_INFLUXDB_INIT_BUCKET=wireless_pid_metrics
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=testbed_secret_token_123
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8086/health || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    restart: unless-stopped
+    networks:
+      - pid-telemetry-net
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../../configs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../configs/grafana/dashboards:/var/lib/grafana/dashboards:ro

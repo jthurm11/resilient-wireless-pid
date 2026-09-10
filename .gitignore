@@ -1,0 +1,15 @@
+# Python bytecode and runtime caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+env/
+venv/
