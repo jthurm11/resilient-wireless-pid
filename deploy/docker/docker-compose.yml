@@ -1,0 +1,98 @@
+version: "3.8"
+
+networks:
+  dcs_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.10.10.0/24
+          gateway: 10.10.10.254
+
+services:
+  # ============================================================================
+  # NODE 1: dcs-ctrl-node (Shared Pod Namespace: 10.10.10.1)
+  # ============================================================================
+  dcs-ctrl-node:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile
+    container_name: dcs-ctrl-node
+    hostname: dcs-ctrl-node
+    cap_add:
+      - NET_ADMIN
+    networks:
+      dcs_net:
+        ipv4_address: 10.10.10.1
+    ports:
+      - "3000:3000"   # Grafana UI
+      - "5000:5000"   # C2 API / Console
+      - "8086:8086"   # InfluxDB Engine
+    volumes:
+      - ../../:/opt/resilient-wireless-pid
+    command: tail -f /dev/null
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: dcs-influxdb
+    network_mode: "service:dcs-ctrl-node"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
+      - DOCKER_INFLUXDB_INIT_ORG=resilient_pid
+      - DOCKER_INFLUXDB_INIT_BUCKET=wireless_pid_metrics
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=testbed_secret_token_123
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8086/health || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: dcs-grafana
+    network_mode: "service:dcs-ctrl-node"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    volumes:
+      - ../../configs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  controller:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile
+    container_name: dcs-controller
+    network_mode: "service:dcs-ctrl-node"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      - INFLUXDB_URL=http://127.0.0.1:8086
+      - INFLUXDB_TOKEN=testbed_secret_token_123
+      - INFLUXDB_ORG=resilient_pid
+      - INFLUXDB_BUCKET=wireless_pid_metrics
+    volumes:
+      - ../../:/opt/resilient-wireless-pid
+    command: run-controller --with-c2 --enable-ui
+
+  # ============================================================================
+  # NODE 2: dcs-plant-node (Independent Namespace: 10.10.10.2)
+  # ============================================================================
+  dcs-plant-node:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile
+    container_name: dcs-plant-node
+    hostname: dcs-plant-node
+    cap_add:
+      - NET_ADMIN
+    networks:
+      dcs_net:
+        ipv4_address: 10.10.10.2
+    volumes:
+      - ../../:/opt/resilient-wireless-pid
+    command: run-plant --mode simulate --host 0.0.0.0 --port 5005
