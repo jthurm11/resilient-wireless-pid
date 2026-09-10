@@ -121,7 +121,7 @@ run-plant --mode simulate
 ```bash
 pct enter 201
 cd /opt/resilient-wireless-pid && source .venv/bin/activate
-run-controller --with-c2 --enable-ui
+run-controller --enable-ui
 ```
 
 ---
