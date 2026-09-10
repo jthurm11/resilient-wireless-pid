@@ -37,7 +37,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\" or r[\"_field\"] == \"setpoint\")\n  |> yield(name: \"tracking\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\" or r[\"_field\"] == \"setpoint\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"tracking\")"
         }
       ]
     },
@@ -54,7 +54,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"control_signal\")\n  |> yield(name: \"u_t\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"control_signal\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"u_t\")"
         }
       ]
     },
@@ -74,7 +74,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt_ms\")\n  |> yield(name: \"rtt\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt_ms\")\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)\n  |> yield(name: \"rtt\")"
         }
       ]
     },
@@ -91,7 +91,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> yield(name: \"err\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"err\")"
         }
       ]
     }
