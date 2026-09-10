@@ -105,12 +105,17 @@ class SimulatedPlant(BasePlant):
         f_wall = self.friction_coeff * v_ball
         accel = (f_aero / self.m) - self.g - f_wall
 
-        # Mechanical floor stop constraint
-        if y <= 0.0 and accel < 0.0:
+        # Mechanical floor stop constraint:
+        # If at or below the floor and net force is downward, clamp state.
+        # If net force is positive, allow acceleration to lift the sphere.
+        if y <= 0.0 and accel <= 0.0:
             accel = 0.0
             v_ball = 0.0
+            d_v_pos = 0.0
+        else:
+            d_v_pos = v_ball
 
-        return np.array([d_v_air, v_ball, accel], dtype=np.float64)
+        return np.array([d_v_air, d_v_pos, accel], dtype=np.float64)
 
     def step(self, u_t: float) -> float:
         u_clamped = float(np.clip(u_t, 0.0, 100.0))
