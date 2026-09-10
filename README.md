@@ -89,7 +89,7 @@ graph TD
 - **Runtimes**: Python 3.10+, Docker Engine (for telemetry services), and `iproute2`.
 - **Privileges**: Elevated privileges (`sudo` or `CAP_NET_ADMIN`) for network namespace manipulations.
 
-> **Note on Virtual Testing:** To validate control routines and Linux `tc/netem` rules without physical hardware, refer to the [Proxmox LXC Mock Environment Guide](docs/development/proxmox_mock_environment.md).
+> **Note on Virtual Testing:** To validate control routines and Linux `tc/netem` rules without physical hardware, refer to the [Mock Environment Guide](docs/development/mock_environment_guide.md).
 
 ### 1. Workspace Provisioning
 ```bash
