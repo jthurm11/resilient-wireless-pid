@@ -31,7 +31,7 @@ logger = logging.getLogger("DCSControllerMain")
 
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """Check if the C2 port is already occupied by an active process."""
+    """Verify if the C2 HTTP socket is already bound."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.2)
         return s.connect_ex((host, port)) == 0
@@ -43,7 +43,6 @@ def parse_args() -> argparse.Namespace:
                         help="Control law architecture under evaluation")
     parser.add_argument("--steps", type=int, default=500, help="Total steps to execute (if no-c2)")
     parser.add_argument("--dt", type=float, default=0.05, help="Sampling period in seconds (default: 50ms)")
-    # Default setpoint is set to None so we can detect if the operator explicitly specified it
     parser.add_argument("--setpoint", type=float, default=None, help="Target process variable setpoint")
     parser.add_argument("--target-host", type=str, default=os.getenv("PLANT_IP", "10.10.10.2"),
                         help="Target plant UDP network host IP")
@@ -59,19 +58,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def push_c2_configuration(port: int, payload: Dict[str, Any]) -> bool:
-    """
-    Transmit CLI configuration upstream to C2 to make it the active source of truth.
-    Retries up to 5 times if C2 is currently completing a cold start.
-    """
+    """Synchronize CLI configuration upstream to C2."""
     url = f"http://127.0.0.1:{port}/api/control"
-    for _ in range(5):
+    for attempt in range(10):
         try:
             res = requests.post(url, json=payload, timeout=0.5)
             if res.status_code == 200:
-                logger.info("Successfully synchronized active parameters to C2: %s", payload)
+                logger.info("Synchronized parameters to C2: %s", payload)
                 return True
         except requests.RequestException:
-            time.sleep(0.3)
+            time.sleep(0.2)
     logger.warning("Could not reach C2 on port %d to push startup parameters.", port)
     return False
 
@@ -83,19 +79,18 @@ class ControllerRuntime:
         self.plant_addr = (args.target_host, args.target_port)
 
         self.dt = args.dt
-        # Default to 50.0 if not specified on CLI
         self.setpoint = args.setpoint if args.setpoint is not None else 50.0
         self.mode = args.mode
-        self.trial_id = args.trial_id or f"{args.mode}_{int(time.time())}"
+        self.trial_id = args.trial_id or (f"{args.mode}_{int(time.time())}" if args.no_c2 else "")
         self.is_running = True
 
-        self.kp = 0.35   # Decreased from 1.2 to eliminate limit-cycle oscillation
-        self.ki = 0.12   # Scaled from 0.4: Slower integral accumulation to eliminate windup overshoot
-        self.kd = 0.06   # Scaled from 0.05: Damped derivative term
+        # Validated gains for calibrated aerodynamic plant
+        self.kp = 0.35
+        self.ki = 0.12
+        self.kd = 0.06
         self.seq_num = 0
         self.last_known_pv = 0.0
 
-        # Output limits match 0-100% actuator duty
         self.controllers = {
             "baseline": DiscretePID(kp=self.kp, ki=self.ki, kd=self.kd, dt=self.dt, output_limits=(0.0, 100.0)),
             "smith": SmithPredictor(kp=self.kp, ki=self.ki, kd=self.kd, dt=self.dt, output_limits=(0.0, 100.0)),
@@ -118,9 +113,32 @@ class ControllerRuntime:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.settimeout(self.dt * 0.8)
 
+    def _sync_initial_c2_state(self) -> None:
+        """Query C2 synchronously once prior to loop boot to avoid tag desync."""
+        if self.args.no_c2:
+            return
+        endpoint = f"{self.c2_url}/api/status"
+        try:
+            res = requests.get(endpoint, timeout=1.0)
+            if res.status_code == 200:
+                data = res.json()
+                with self.lock:
+                    if not self.trial_id:
+                        self.trial_id = data.get("trial_id", f"{self.mode}_{int(time.time())}")
+                    if self.args.setpoint is None:
+                        self.setpoint = float(data.get("setpoint", self.setpoint))
+                    self.is_running = data.get("is_running", self.is_running)
+                    logger.info("Seeded initial runtime state from C2: Trial=%s, SP=%.1f", self.trial_id, self.setpoint)
+        except requests.RequestException as e:
+            logger.warning("Failed to reach C2 during startup handshake (%s). Using defaults.", e)
+            if not self.trial_id:
+                self.trial_id = f"{self.mode}_{int(time.time())}"
+
     def start(self) -> None:
-        logger.info("Starting Controller | Target Plant: %s | Mode: %s | Setpoint: %.2f", 
-                    self.plant_addr, self.mode, self.setpoint)
+        self._sync_initial_c2_state()
+        logger.info("Starting Controller | Target Plant: %s | Mode: %s | SP: %.2f | Trial: %s",
+                    self.plant_addr, self.mode, self.setpoint, self.trial_id)
+
         if hasattr(self.telemetry, "start"):
             self.telemetry.start()
 
@@ -150,10 +168,9 @@ class ControllerRuntime:
                     with self.lock:
                         self.is_running = data.get("is_running", self.is_running)
                         self.trial_id = data.get("trial_id", self.trial_id)
-                        
                         mode_map = {
-                            "standard_pid": "baseline", 
-                            "smith_predictor": "smith", 
+                            "standard_pid": "baseline",
+                            "smith_predictor": "smith",
                             "resilient_pid": "resilient"
                         }
                         raw_alg = data.get("algorithm", self.mode)
@@ -235,6 +252,7 @@ class ControllerRuntime:
             if sleep_rem > 0:
                 time.sleep(sleep_rem)
             else:
+                # Catch up clock to avoid accumulator collapse on network dropouts
                 next_tick = time.perf_counter()
 
 
@@ -243,7 +261,6 @@ def main() -> None:
     c2_proc = None
     c2_log_file = None
 
-    # Handle C2 lifecycle management
     if not args.no_c2:
         if not is_port_in_use(args.c2_port):
             logger.info("Port %d vacant. Spawning background C2 process...", args.c2_port)
@@ -256,18 +273,16 @@ def main() -> None:
         else:
             logger.info("Existing C2 server detected on port %d.", args.c2_port)
 
-        # Build initial synchronization payload from CLI arguments
         init_payload: Dict[str, Any] = {
             "ui_enabled": args.enable_ui,
             "algorithm": args.mode,
-            "is_running": True  # CLI launch implies the loop should immediately engage
+            "is_running": True
         }
         if args.setpoint is not None:
             init_payload["setpoint"] = args.setpoint
         if args.trial_id:
             init_payload["trial_id"] = args.trial_id
 
-        # Push state to C2 so the C2 server and future polls reflect these CLI flags
         push_c2_configuration(args.c2_port, init_payload)
 
     runtime = ControllerRuntime(args)
@@ -283,6 +298,7 @@ def main() -> None:
             c2_proc.wait()
         if c2_log_file:
             c2_log_file.close()
+
 
 if __name__ == "__main__":
     main()
