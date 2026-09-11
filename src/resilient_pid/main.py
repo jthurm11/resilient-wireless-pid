@@ -89,7 +89,9 @@ class ControllerRuntime:
         self.trial_id = args.trial_id or f"{args.mode}_{int(time.time())}"
         self.is_running = True
 
-        self.kp, self.ki, self.kd = 1.2, 0.4, 0.05
+        self.kp = 0.35   # Decreased from 1.2 to eliminate limit-cycle oscillation
+        self.ki = 0.12   # Scaled from 0.4: Slower integral accumulation to eliminate windup overshoot
+        self.kd = 0.06   # Scaled from 0.05: Damped derivative term
         self.seq_num = 0
         self.last_known_pv = 0.0
 
