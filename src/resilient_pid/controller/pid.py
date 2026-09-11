@@ -1,14 +1,18 @@
-from typing import Tuple
-
 class DiscretePID:
     """
     Discrete PID Controller with trapezoidal integration,
     derivative low-pass filtering, and anti-windup clamping.
     """
 
-    def __init__(self, kp: float, ki: float, kd: float, dt: float,
-                 output_limits: Tuple[float, float] = (-100.0, 100.0),
-                 derivative_filter_tau: float = 0.02):
+    def __init__(
+        self,
+        kp: float,
+        ki: float,
+        kd: float,
+        dt: float,
+        output_limits: tuple[float, float] = (-100.0, 100.0),
+        derivative_filter_tau: float = 0.02,
+    ):
         self.kp = kp
         self.ki = ki
         self.kd = kd

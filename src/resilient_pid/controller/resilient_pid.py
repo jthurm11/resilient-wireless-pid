@@ -1,14 +1,22 @@
-from typing import Tuple
 from resilient_pid.controller.pid import DiscretePID
+
 
 class ResilientPID:
     """
     Resilient PID Controller utilizing a predictive linear observer
     and zero-order hold (ZOH) state recovery during network dropouts.
     """
-    def __init__(self, kp: float, ki: float, kd: float, dt: float,
-                 plant_gain: float = 8.0, plant_tau: float = 10.0,
-                 output_limits: Tuple[float, float] = (-100.0, 100.0)):
+
+    def __init__(
+        self,
+        kp: float,
+        ki: float,
+        kd: float,
+        dt: float,
+        plant_gain: float = 8.0,
+        plant_tau: float = 10.0,
+        output_limits: tuple[float, float] = (-100.0, 100.0),
+    ):
         self.pid = DiscretePID(kp, ki, kd, dt, output_limits)
         self.dt = dt
         self.k = plant_gain

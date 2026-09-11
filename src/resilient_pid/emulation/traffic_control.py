@@ -1,17 +1,19 @@
-import subprocess
 import logging
-import re
 import shutil
+import subprocess
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger("TrafficControl")
+
 
 class TrafficControlWrapper:
     """
     A robust Python wrapper around Linux Traffic Control (tc) and Network Emulation (netem)
     to automate latency, jitter, and packet loss injection for wireless control testing.
     """
-    
+
     def __init__(self, interface: str = "wlan0"):
         self.interface = interface
         self._check_tc_availability()
@@ -19,8 +21,10 @@ class TrafficControlWrapper:
     def _check_tc_availability(self):
         """Verify that the 'tc' command exists on the system."""
         if shutil.which("tc") is None:
-            logger.warning("The 'tc' executable was not found in the system PATH. "
-                           "Emulation commands will fail if executed on a non-Linux system.")
+            logger.warning(
+                "The 'tc' executable was not found in the system PATH. "
+                "Emulation commands will fail if executed on a non-Linux system."
+            )
 
     def _run_cmd(self, cmd: list[str]) -> subprocess.CompletedProcess:
         """Run a shell command using subprocess and handle errors cleanly."""
@@ -42,26 +46,32 @@ class TrafficControlWrapper:
         cmd = ["sudo", "tc", "qdisc", "del", "dev", self.interface, "root"]
         try:
             self._run_cmd(cmd)
-            logger.info(f"Successfully cleared all traffic control rules on {self.interface}.")
+            logger.info(
+                f"Successfully cleared all traffic control rules on {self.interface}."
+            )
             return True
         except Exception as e:
             # If there was no rule to delete, tc returns an error; we treat this as a success/no-op
             if "Cannot find qdisc" in str(e) or "No such file or directory" in str(e):
-                logger.debug(f"No active traffic control rules to clear on {self.interface}.")
+                logger.debug(
+                    f"No active traffic control rules to clear on {self.interface}."
+                )
                 return True
             logger.error(f"Failed to clear traffic control rules: {e}")
             return False
 
-    def apply_rules(self, 
-                    delay_ms: float = 0.0, 
-                    jitter_ms: float = 0.0, 
-                    delay_correlation_pct: float = 0.0,
-                    loss_pct: float = 0.0, 
-                    loss_correlation_pct: float = 0.0,
-                    distribution: str = "normal") -> bool:
+    def apply_rules(
+        self,
+        delay_ms: float = 0.0,
+        jitter_ms: float = 0.0,
+        delay_correlation_pct: float = 0.0,
+        loss_pct: float = 0.0,
+        loss_correlation_pct: float = 0.0,
+        distribution: str = "normal",
+    ) -> bool:
         """
         Apply network emulation rules (latency, jitter, packet loss) using tc/netem.
-        
+
         Args:
             delay_ms (float): Mean network latency in milliseconds.
             jitter_ms (float): Delay variation (jitter) in milliseconds.
@@ -69,7 +79,7 @@ class TrafficControlWrapper:
             loss_pct (float): Percentage of packets to drop (0 to 100 %).
             loss_correlation_pct (float): Correlation value for loss (0 to 100 %).
             distribution (str): Jitter distribution (e.g., 'normal', 'pareto', 'paretonormal').
-            
+
         Returns:
             bool: True if rules were applied successfully, False otherwise.
         """
@@ -78,7 +88,18 @@ class TrafficControlWrapper:
 
         # Build tc netem command structure
         # Base command: sudo tc qdisc add dev <iface> root handle 1: netem
-        cmd = ["sudo", "tc", "qdisc", "add", "dev", self.interface, "root", "handle", "1:", "netem"]
+        cmd = [
+            "sudo",
+            "tc",
+            "qdisc",
+            "add",
+            "dev",
+            self.interface,
+            "root",
+            "handle",
+            "1:",
+            "netem",
+        ]
 
         # Latency & Jitter configuration
         if delay_ms > 0:
@@ -98,14 +119,18 @@ class TrafficControlWrapper:
 
         # If neither delay nor loss is configured, we do not need to apply anything
         if delay_ms <= 0 and loss_pct <= 0:
-            logger.info("No active emulation parameters specified (delay/loss are zero). Interface remains clean.")
+            logger.info(
+                "No active emulation parameters specified (delay/loss are zero). Interface remains clean."
+            )
             return True
 
         try:
             self._run_cmd(cmd)
-            logger.info(f"Applied emulation to {self.interface}: "
-                        f"Delay={delay_ms}ms (jitter={jitter_ms}ms, corr={delay_correlation_pct}%, dist={distribution}), "
-                        f"Loss={loss_pct}% (corr={loss_correlation_pct}%)")
+            logger.info(
+                f"Applied emulation to {self.interface}: "
+                f"Delay={delay_ms}ms (jitter={jitter_ms}ms, corr={delay_correlation_pct}%, dist={distribution}), "
+                f"Loss={loss_pct}% (corr={loss_correlation_pct}%)"
+            )
             return True
         except Exception as e:
             logger.error(f"Failed to apply traffic control rules: {e}")
@@ -116,34 +141,37 @@ class TrafficControlWrapper:
     def show_active_rules(self) -> str:
         """
         Query tc to show currently active rules on the interface.
-        
+
         Returns:
             str: Raw tc output showing active queuing disciplines.
         """
         cmd = ["tc", "qdisc", "show", "dev", self.interface]
         try:
             result = self._run_cmd(cmd)
-            return result.stdout.strip()
+            return str(result.stdout.strip())
         except Exception as e:
             logger.error(f"Failed to fetch active rules: {e}")
             return f"Error retrieving rules: {e}"
+
 
 if __name__ == "__main__":
     # Standard quick test block to demonstrate functionality
     print("Testing TrafficControlWrapper initialization...")
     tc = TrafficControlWrapper(interface="lo")  # Use loopback for local testing
-    
+
     print("\n1. Showing active rules (baseline):")
     print(tc.show_active_rules())
-    
-    print("\n2. Applying latency and jitter simulation (50ms delay, 10ms jitter, normal distribution):")
+
+    print(
+        "\n2. Applying latency and jitter simulation (50ms delay, 10ms jitter, normal distribution):"
+    )
     success = tc.apply_rules(delay_ms=50.0, jitter_ms=10.0, distribution="normal")
     if success:
         print("Success! Current rules:")
         print(tc.show_active_rules())
     else:
         print("Failed to apply (expected if not run as sudo or on non-Linux OS).")
-        
+
     print("\n3. Clearing rules...")
     tc.clear_rules()
     print("Cleared! Current rules:")
