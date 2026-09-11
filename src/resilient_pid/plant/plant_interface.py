@@ -74,9 +74,11 @@ class SimulatedPlant(BasePlant):
         self.cd = 0.47          # Sphere drag coefficient
         self.area = np.pi * (self.r ** 2)
 
-        # Actuator curve: 9.5 m/s max airflow gives hover at ~48-52% PWM
-        self.tau_fan = 0.22     # Rotational electromechanical time constant (s)
-        self.v_air_max = 9.5    # Max steady-state airspeed (m/s)
+        # Actuator curve: 
+        #    9.5 m/s max airflow gives hover at ~48-52% PWM
+        #    12.5 m/s max airflow gives hover at ~45-50% PWM
+        self.tau_fan = 0.18     # Rotational electromechanical time constant (s)
+        self.v_air_max = 12.5    # Max steady-state airspeed (m/s)
 
         # State: [v_air (m/s), y_pos (m), v_ball (m/s)]
         self.state = np.array([0.0, 0.0, 0.0], dtype=np.float64)
@@ -84,7 +86,7 @@ class SimulatedPlant(BasePlant):
         # Mechanical boundaries
         self.cor_bottom = 0.20
         self.cor_top = 0.25
-        self.friction_coeff = 0.08
+        self.friction_coeff = 0.05
 
     def _dynamics(self, state: np.ndarray, u_clamped: float, turbulent_flow: float) -> np.ndarray:
         v_air, y, v_ball = state
@@ -120,7 +122,9 @@ class SimulatedPlant(BasePlant):
     def step(self, u_t: float) -> float:
         u_clamped = float(np.clip(u_t, 0.0, 100.0))
 
-        # Fluid turbulence: dynamic vortex shedding perturbation (proportional to fan speed)
+        # Fluid turbulence: 
+        #    0.25: dynamic vortex shedding perturbation (proportional to fan speed)
+        #    0.12: damp stochastic vortex turbulence to avoid derivative kicks
         turbulence_sigma = 0.25 * (self.state[0] / self.v_air_max)
         turbulent_flow = float(np.random.normal(0.0, max(0.01, turbulence_sigma)))
 
