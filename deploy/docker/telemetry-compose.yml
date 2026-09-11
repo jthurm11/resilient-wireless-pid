@@ -1,5 +1,3 @@
-version: "3.8"
-
 networks:
   pid-telemetry-net:
     name: pid-telemetry-net

@@ -204,7 +204,7 @@ pve_create_container() {
     --swap 512 \
     --features nesting=1,keyctl=1 \
     --net0 name=eth0,bridge=vmbr0,ip=dhcp \
-    --net1 name=eth1,bridge=vmbr1,ip="${internal_ip}/24" \
+    --net1 name=wlan0,bridge=vmbr1,ip="${internal_ip}/24" \
     --storage "$STORAGE" \
     --rootfs volume="${STORAGE}:8" \
     --unprivileged 0 >/dev/null 2>&1
@@ -286,8 +286,8 @@ create_lxc() {
   msg_ok "Workspace ready on dcs-plant-node"
 
   echo -e "\n${GN}${BOLD}Proxmox Testbed Fully Provisioned.${CL}"
-  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} CT 201 | eth1: 10.10.10.1/24"
-  echo -e "${TAB}${BOLD}dcs-plant-node:${CL} CT 202 | eth1: 10.10.10.2/24\n"
+  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} CT 201 | wlan0: 10.10.10.1/24"
+  echo -e "${TAB}${BOLD}dcs-plant-node:${CL} CT 202 | wlan0: 10.10.10.2/24\n"
 }
 
 destroy_lxc() {
