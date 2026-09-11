@@ -31,7 +31,7 @@ The testbed decouples real-time embedded control execution from human telemetry 
 |   | InfluxDB v2 Engine (:8086) | <=======> | Grafana Visualizer (:3000)     |   |
 |   +----------------------------+           +--------------------------------+   |
 |                 |                                                               |
-|                 +--- [ Linux Kernel tc/netem qdisc (eth0 / eth1 / wlan0) ]      |
+|                 +--- [ Linux Kernel tc/netem qdisc (wlan0) ]      |
 +---------------------------------------+-----------------------------------------+
 |
 Isolated DCS Subnet (10.10.10.0/24 UDP)
@@ -142,7 +142,7 @@ Confirm that the kernel has loaded the network emulation scheduler and exposes n
 sudo modprobe sch_netem
 
 # Inspect active qdisc on inter-node DCS interface
-tc qdisc show dev eth0
+tc qdisc show dev wlan0
 ```
 
 
@@ -161,18 +161,12 @@ run-plant --mode simulate --host 0.0.0.0 --port 5005
 
 ### 2. Controller Node (`dcs-ctrl-node` @ 10.10.10.1)
 
-Identify your active egress interface pointing to the plant node:
-
-* **Local Docker**: `IFACE="eth0"`
-
-* **Proxmox LXC**: `IFACE="eth1"` (`vmbr1` isolated bridge)
-
-* **Bare-Metal Pi**: `IFACE="wlan0"` (or `eth0`)
-
-
 Apply stochastic network degradation to the egress interface:
 
 ```bash
+# Identify active egress interface pointing to the plant node
+IFACE="wlan0"
+
 # Inject 40ms baseline delay, ±10ms Gaussian jitter, and 2% packet loss
 sudo tc qdisc add dev $IFACE root netem delay 40ms 10ms distribution normal loss 2%
 
