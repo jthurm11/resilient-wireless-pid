@@ -5,28 +5,36 @@ Unified Plant Runtime Daemon for Resilient Wireless PID DCS.
 Provides an interchangeable interface between physical hardware (PWM/I2C)
 and a realistic, continuous aerodynamic software twin (RK4 integration).
 """
-import os
-import sys
-import time
-import json
-import socket
-import logging
+
 import argparse
+import json
+import logging
+import socket
+import time
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger("PlantInterface")
 
+# Conditional import of physical hardware drivers
+smbus2: Any = None
+GPIO: Any = None
+HARDWARE_AVAILABLE: bool = False
+
 try:
-    import smbus2
-    import RPi.GPIO as GPIO
+    import RPi.GPIO as _GPIO
+    import smbus2 as _smbus2
+
+    GPIO = _GPIO
+    smbus2 = _smbus2
     HARDWARE_AVAILABLE = True
 except (ImportError, RuntimeError):
-    smbus2 = None
-    GPIO = None
-    HARDWARE_AVAILABLE = False
+    pass
 
 
 class BasePlant(ABC):
@@ -36,7 +44,7 @@ class BasePlant(ABC):
     def step(self, u_t: float) -> float:
         """
         Accepts the commanded control effort u(t) and advances plant dynamics.
-        
+
         :param u_t: Control input [0.0, 100.0]%
         :return: Current process variable feedback pv(t) [0.0, 100.0]%
         """
@@ -51,17 +59,18 @@ class BasePlant(ABC):
 class SimulatedPlant(BasePlant):
     """
     High-fidelity continuous aerodynamic twin of the PingPongPID testbed.
-    Models DC blower rotational inertia, non-linear fluid drag relative to 
-    flow speed, gravitational forces, tube-wall boundary dissipation, 
+    Models DC blower rotational inertia, non-linear fluid drag relative to
+    flow speed, gravitational forces, tube-wall boundary dissipation,
     and acoustic sensor quantization noise. Integrated via Runge-Kutta 4 (RK4).
     """
+
     def __init__(
         self,
         dt: float = 0.05,
-        tube_length_m: float = 0.50,    # 50 cm physical acrylic tube
-        ball_mass_kg: float = 0.0027,   # 2.7g standard ping pong ball
-        ball_radius_m: float = 0.020,   # 40mm diameter
-        g: float = 9.80665
+        tube_length_m: float = 0.50,  # 50 cm physical acrylic tube
+        ball_mass_kg: float = 0.0027,  # 2.7g standard ping pong ball
+        ball_radius_m: float = 0.020,  # 40mm diameter
+        g: float = 9.80665,
     ):
         self.dt = dt
         self.L_tube = tube_length_m
@@ -70,15 +79,15 @@ class SimulatedPlant(BasePlant):
         self.g = g
 
         # Physical constants
-        self.rho = 1.204        # Air density at 20°C (kg/m^3)
-        self.cd = 0.47          # Sphere drag coefficient
-        self.area = np.pi * (self.r ** 2)
+        self.rho = 1.204  # Air density at 20°C (kg/m^3)
+        self.cd = 0.47  # Sphere drag coefficient
+        self.area = np.pi * (self.r**2)
 
-        # Actuator curve: 
+        # Actuator curve:
         #    9.5 m/s max airflow gives hover at ~48-52% PWM
         #    12.5 m/s max airflow gives hover at ~45-50% PWM
-        self.tau_fan = 0.18     # Rotational electromechanical time constant (s)
-        self.v_air_max = 12.5    # Max steady-state airspeed (m/s)
+        self.tau_fan = 0.18  # Rotational electromechanical time constant (s)
+        self.v_air_max = 12.5  # Max steady-state airspeed (m/s)
 
         # State: [v_air (m/s), y_pos (m), v_ball (m/s)]
         self.state = np.array([0.0, 0.0, 0.0], dtype=np.float64)
@@ -88,7 +97,9 @@ class SimulatedPlant(BasePlant):
         self.cor_top = 0.25
         self.friction_coeff = 0.05
 
-    def _dynamics(self, state: np.ndarray, u_clamped: float, turbulent_flow: float) -> np.ndarray:
+    def _dynamics(
+        self, state: np.ndarray, u_clamped: float, turbulent_flow: float
+    ) -> np.ndarray:
         v_air, y, v_ball = state
 
         # Blower lag ODE: tau * dv_air/dt = target - v_air
@@ -122,7 +133,7 @@ class SimulatedPlant(BasePlant):
     def step(self, u_t: float) -> float:
         u_clamped = float(np.clip(u_t, 0.0, 100.0))
 
-        # Fluid turbulence: 
+        # Fluid turbulence:
         #    0.25: dynamic vortex shedding perturbation (proportional to fan speed)
         #    0.12: damp stochastic vortex turbulence to avoid derivative kicks
         turbulence_sigma = 0.25 * (self.state[0] / self.v_air_max)
@@ -163,9 +174,17 @@ class SimulatedPlant(BasePlant):
 
 
 class HardwarePlant(BasePlant):
-    def __init__(self, pwm_pin: int = 18, pwm_freq: int = 25000, i2c_bus: int = 1, i2c_addr: int = 0x29):
+    def __init__(
+        self,
+        pwm_pin: int = 18,
+        pwm_freq: int = 25000,
+        i2c_bus: int = 1,
+        i2c_addr: int = 0x29,
+    ):
         if not HARDWARE_AVAILABLE:
-            raise RuntimeError("Hardware drivers missing. Run only on physical Raspberry Pi nodes.")
+            raise RuntimeError(
+                "Hardware drivers missing. Run only on physical Raspberry Pi nodes."
+            )
         self.pwm_pin = pwm_pin
         self.sensor_addr = i2c_addr
 
@@ -175,8 +194,13 @@ class HardwarePlant(BasePlant):
         self.pwm.start(0.0)
 
         self.bus = smbus2.SMBus(i2c_bus)
-        logger.info("Initialized PWM (Pin %d, %d Hz) and I2C (Bus %d, Addr 0x%02X)",
-                    pwm_pin, pwm_freq, i2c_bus, i2c_addr)
+        logger.info(
+            "Initialized PWM (Pin %d, %d Hz) and I2C (Bus %d, Addr 0x%02X)",
+            pwm_pin,
+            pwm_freq,
+            i2c_bus,
+            i2c_addr,
+        )
 
     def step(self, u_t: float) -> float:
         duty = max(0.0, min(100.0, u_t))
@@ -199,7 +223,9 @@ class HardwarePlant(BasePlant):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Distributed Control System - Plant Node Daemon")
+    parser = argparse.ArgumentParser(
+        description="Distributed Control System - Plant Node Daemon"
+    )
     parser.add_argument("--mode", choices=["hardware", "simulate"], default="hardware")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5005)
@@ -211,14 +237,21 @@ def main() -> None:
     plant: BasePlant
     if args.mode == "hardware":
         if not HARDWARE_AVAILABLE:
-            logger.error("Physical drivers unavailable. Launching simulated twin instead.")
+            logger.error(
+                "Physical drivers unavailable. Launching simulated twin instead."
+            )
             plant = SimulatedPlant()
         else:
             plant = HardwarePlant()
     else:
         plant = SimulatedPlant()
 
-    logger.info("Plant Service active | Mode: %s | Socket: %s:%d", args.mode.upper(), args.host, args.port)
+    logger.info(
+        "Plant Service active | Mode: %s | Socket: %s:%d",
+        args.mode.upper(),
+        args.host,
+        args.port,
+    )
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.host, args.port))
@@ -239,12 +272,7 @@ def main() -> None:
 
             pv = plant.step(u_t)
 
-            resp = {
-                "seq": seq,
-                "pv": pv,
-                "t_send": t_send,
-                "t_echo": t_recv
-            }
+            resp = {"seq": seq, "pv": pv, "t_send": t_send, "t_echo": t_recv}
             sock.sendto(json.dumps(resp).encode("utf-8"), addr)
 
     except KeyboardInterrupt:

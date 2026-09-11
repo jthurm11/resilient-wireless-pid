@@ -1,33 +1,43 @@
 #!/usr/bin/env python3
-"""
-src/resilient_pid/main.py
+"""src/resilient_pid/main.py
+
 Main runtime orchestrator and CLI entry point for resilient-wireless-pid.
 Supports standalone batch evaluation, auto-spawning C2, and bidirectional sync.
 """
-import os
-import sys
-import time
-import socket
+
+import argparse
 import json
 import logging
-import argparse
-import threading
+import os
+import socket
 import subprocess
-from typing import Optional, Dict, Any
+import sys
+import threading
+import time
+from typing import Any, Protocol, Union
 
 import requests
 
 from resilient_pid.controller.pid import DiscretePID
-from resilient_pid.controller.smith_predictor import SmithPredictor
 from resilient_pid.controller.resilient_pid import ResilientPID
+from resilient_pid.controller.smith_predictor import SmithPredictor
+from resilient_pid.telemetry.influx_writer import InfluxWriter
 
-try:
-    from resilient_pid.telemetry.influx_writer import InfluxWriter
-except ImportError:
-    from influx_writer import InfluxWriter
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger("DCSControllerMain")
+
+
+class ControllerProtocol(Protocol):
+    """Structural subtyping protocol for DCS controller implementations."""
+
+    def reset(self) -> None: ...
+
+    def update(self, *args: Any, **kwargs: Any) -> float: ...
+
+
+ControllerType = Union[DiscretePID, SmithPredictor, ResilientPID]
 
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
@@ -38,29 +48,68 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Resilient Wireless DCS Runtime Controller")
-    parser.add_argument("--mode", choices=["baseline", "smith", "resilient"], default="baseline",
-                        help="Control law architecture under evaluation")
-    parser.add_argument("--steps", type=int, default=500, help="Total steps to execute (if no-c2)")
-    parser.add_argument("--dt", type=float, default=0.05, help="Sampling period in seconds (default: 50ms)")
-    parser.add_argument("--setpoint", type=float, default=None, help="Target process variable setpoint")
-    parser.add_argument("--target-host", type=str, default=os.getenv("PLANT_IP", "10.10.10.2"),
-                        help="Target plant UDP network host IP")
-    parser.add_argument("--target-port", type=int, default=int(os.getenv("PLANT_PORT", "5005")),
-                        help="Target plant UDP port")
-    parser.add_argument("--trial-id", type=str, default="", help="Unique experiment trial identifier")
-    parser.add_argument("--c2-port", type=int, default=int(os.getenv("C2_PORT", "5000")),
-                        help="Supervisory C2 HTTP port")
-    parser.add_argument("--no-c2", action="store_true", help="Disable C2 sync and auto-spawning entirely")
-    parser.add_argument("--enable-ui", action="store_true", help="Mount minimal operator web UI at /")
-    parser.add_argument("--mock-loop", action="store_true", help="Simulate first-order plant locally without UDP")
+    parser = argparse.ArgumentParser(
+        description="Resilient Wireless DCS Runtime Controller"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["baseline", "smith", "resilient"],
+        default="baseline",
+        help="Control law architecture under evaluation",
+    )
+    parser.add_argument(
+        "--steps", type=int, default=500, help="Total steps to execute (if no-c2)"
+    )
+    parser.add_argument(
+        "--dt",
+        type=float,
+        default=0.05,
+        help="Sampling period in seconds (default: 50ms)",
+    )
+    parser.add_argument(
+        "--setpoint", type=float, default=None, help="Target process variable setpoint"
+    )
+    parser.add_argument(
+        "--target-host",
+        type=str,
+        default=os.getenv("PLANT_IP", "10.10.10.2"),
+        help="Target plant UDP network host IP",
+    )
+    parser.add_argument(
+        "--target-port",
+        type=int,
+        default=int(os.getenv("PLANT_PORT", "5005")),
+        help="Target plant UDP port",
+    )
+    parser.add_argument(
+        "--trial-id", type=str, default="", help="Unique experiment trial identifier"
+    )
+    parser.add_argument(
+        "--c2-port",
+        type=int,
+        default=int(os.getenv("C2_PORT", "5000")),
+        help="Supervisory C2 HTTP port",
+    )
+    parser.add_argument(
+        "--no-c2",
+        action="store_true",
+        help="Disable C2 sync and auto-spawning entirely",
+    )
+    parser.add_argument(
+        "--enable-ui", action="store_true", help="Mount minimal operator web UI at /"
+    )
+    parser.add_argument(
+        "--mock-loop",
+        action="store_true",
+        help="Simulate first-order plant locally without UDP",
+    )
     return parser.parse_args()
 
 
-def push_c2_configuration(port: int, payload: Dict[str, Any]) -> bool:
+def push_c2_configuration(port: int, payload: dict[str, Any]) -> bool:
     """Synchronize CLI configuration upstream to C2."""
     url = f"http://127.0.0.1:{port}/api/control"
-    for attempt in range(10):
+    for _ in range(10):
         try:
             res = requests.post(url, json=payload, timeout=0.5)
             if res.status_code == 200:
@@ -81,7 +130,9 @@ class ControllerRuntime:
         self.dt = args.dt
         self.setpoint = args.setpoint if args.setpoint is not None else 50.0
         self.mode = args.mode
-        self.trial_id = args.trial_id or (f"{args.mode}_{int(time.time())}" if args.no_c2 else "")
+        self.trial_id = args.trial_id or (
+            f"{args.mode}_{int(time.time())}" if args.no_c2 else ""
+        )
         self.is_running = True
 
         # Validated gains for calibrated aerodynamic plant
@@ -91,10 +142,28 @@ class ControllerRuntime:
         self.seq_num = 0
         self.last_known_pv = 0.0
 
-        self.controllers = {
-            "baseline": DiscretePID(kp=self.kp, ki=self.ki, kd=self.kd, dt=self.dt, output_limits=(0.0, 100.0)),
-            "smith": SmithPredictor(kp=self.kp, ki=self.ki, kd=self.kd, dt=self.dt, output_limits=(0.0, 100.0)),
-            "resilient": ResilientPID(kp=self.kp, ki=self.ki, kd=self.kd, dt=self.dt, output_limits=(0.0, 100.0)),
+        self.controllers: dict[str, ControllerType] = {
+            "baseline": DiscretePID(
+                kp=self.kp,
+                ki=self.ki,
+                kd=self.kd,
+                dt=self.dt,
+                output_limits=(0.0, 100.0),
+            ),
+            "smith": SmithPredictor(
+                kp=self.kp,
+                ki=self.ki,
+                kd=self.kd,
+                dt=self.dt,
+                output_limits=(0.0, 100.0),
+            ),
+            "resilient": ResilientPID(
+                kp=self.kp,
+                ki=self.ki,
+                kd=self.kd,
+                dt=self.dt,
+                output_limits=(0.0, 100.0),
+            ),
         }
 
         self.lock = threading.Lock()
@@ -105,10 +174,10 @@ class ControllerRuntime:
             token=os.getenv("INFLUXDB_TOKEN", "testbed_secret_token_123"),
             org=os.getenv("INFLUXDB_ORG", "resilient_pid"),
             bucket=os.getenv("INFLUXDB_BUCKET", "wireless_pid_metrics"),
-            dry_run=os.getenv("INFLUXDB_DRY_RUN", "False").lower() == "true"
+            dry_run=os.getenv("INFLUXDB_DRY_RUN", "False").lower() == "true",
         )
 
-        self._socket: Optional[socket.socket] = None
+        self._socket: socket.socket | None = None
         if not self.args.mock_loop:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.settimeout(self.dt * 0.8)
@@ -124,26 +193,41 @@ class ControllerRuntime:
                 data = res.json()
                 with self.lock:
                     if not self.trial_id:
-                        self.trial_id = data.get("trial_id", f"{self.mode}_{int(time.time())}")
+                        self.trial_id = data.get(
+                            "trial_id", f"{self.mode}_{int(time.time())}"
+                        )
                     if self.args.setpoint is None:
                         self.setpoint = float(data.get("setpoint", self.setpoint))
                     self.is_running = data.get("is_running", self.is_running)
-                    logger.info("Seeded initial runtime state from C2: Trial=%s, SP=%.1f", self.trial_id, self.setpoint)
+                    logger.info(
+                        "Seeded initial runtime state from C2: Trial=%s, SP=%.1f",
+                        self.trial_id,
+                        self.setpoint,
+                    )
         except requests.RequestException as e:
-            logger.warning("Failed to reach C2 during startup handshake (%s). Using defaults.", e)
+            logger.warning(
+                "Failed to reach C2 during startup handshake (%s). Using defaults.", e
+            )
             if not self.trial_id:
                 self.trial_id = f"{self.mode}_{int(time.time())}"
 
     def start(self) -> None:
         self._sync_initial_c2_state()
-        logger.info("Starting Controller | Target Plant: %s | Mode: %s | SP: %.2f | Trial: %s",
-                    self.plant_addr, self.mode, self.setpoint, self.trial_id)
+        logger.info(
+            "Starting Controller | Target Plant: %s | Mode: %s | SP: %.2f | Trial: %s",
+            self.plant_addr,
+            self.mode,
+            self.setpoint,
+            self.trial_id,
+        )
 
         if hasattr(self.telemetry, "start"):
             self.telemetry.start()
 
         if not self.args.no_c2:
-            sync_thread = threading.Thread(target=self._c2_sync_loop, name="C2SyncWorker", daemon=True)
+            sync_thread = threading.Thread(
+                target=self._c2_sync_loop, name="C2SyncWorker", daemon=True
+            )
             sync_thread.start()
 
         self._run_sampling_loop()
@@ -171,7 +255,7 @@ class ControllerRuntime:
                         mode_map = {
                             "standard_pid": "baseline",
                             "smith_predictor": "smith",
-                            "resilient_pid": "resilient"
+                            "resilient_pid": "resilient",
                         }
                         raw_alg = data.get("algorithm", self.mode)
                         self.mode = mode_map.get(raw_alg, raw_alg)
@@ -206,8 +290,10 @@ class ControllerRuntime:
             is_loss = False
             rtt_ms = None
 
-            if active_mode == "resilient":
-                u_t = controller.update(setpoint=sp, pv_actual=self.last_known_pv, is_loss=False)
+            if isinstance(controller, ResilientPID):
+                u_t = controller.update(
+                    setpoint=sp, pv_actual=self.last_known_pv, is_loss=False
+                )
             else:
                 u_t = controller.update(setpoint=sp, pv=self.last_known_pv)
 
@@ -217,22 +303,29 @@ class ControllerRuntime:
                 rtt_ms = 0.5
             else:
                 t_tx = time.perf_counter()
-                payload = json.dumps({"seq": self.seq_num, "u": u_t, "t_send": t_tx}).encode("utf-8")
+                payload = json.dumps(
+                    {"seq": self.seq_num, "u": u_t, "t_send": t_tx}
+                ).encode("utf-8")
                 try:
-                    self._socket.sendto(payload, self.plant_addr)
-                    raw, _ = self._socket.recvfrom(1024)
-                    rtt_ms = (time.perf_counter() - t_tx) * 1000.0
-                    resp = json.loads(raw.decode("utf-8"))
-                    if resp.get("seq") == self.seq_num:
-                        self.last_known_pv = float(resp["pv"])
+                    if self._socket is not None:
+                        self._socket.sendto(payload, self.plant_addr)
+                        raw, _ = self._socket.recvfrom(1024)
+                        rtt_ms = (time.perf_counter() - t_tx) * 1000.0
+                        resp = json.loads(raw.decode("utf-8"))
+                        if resp.get("seq") == self.seq_num:
+                            self.last_known_pv = float(resp["pv"])
+                        else:
+                            is_loss = True
                     else:
                         is_loss = True
-                except (socket.timeout, ConnectionRefusedError, json.JSONDecodeError):
+                except (TimeoutError, ConnectionRefusedError, json.JSONDecodeError):
                     is_loss = True
                     rtt_ms = None
 
-            if is_loss and active_mode == "resilient":
-                u_t = controller.update(setpoint=sp, pv_actual=self.last_known_pv, is_loss=True)
+            if is_loss and isinstance(controller, ResilientPID):
+                u_t = controller.update(
+                    setpoint=sp, pv_actual=self.last_known_pv, is_loss=True
+                )
                 self.last_known_pv = controller.y_est
 
             error = sp - self.last_known_pv
@@ -243,7 +336,7 @@ class ControllerRuntime:
                 process_variable=self.last_known_pv,
                 control_signal=u_t,
                 error=error,
-                rtt_ms=rtt_ms
+                rtt_ms=rtt_ms,
             )
 
             self.seq_num += 1
@@ -252,7 +345,6 @@ class ControllerRuntime:
             if sleep_rem > 0:
                 time.sleep(sleep_rem)
             else:
-                # Catch up clock to avoid accumulator collapse on network dropouts
                 next_tick = time.perf_counter()
 
 
@@ -263,9 +355,17 @@ def main() -> None:
 
     if not args.no_c2:
         if not is_port_in_use(args.c2_port):
-            logger.info("Port %d vacant. Spawning background C2 process...", args.c2_port)
+            logger.info(
+                "Port %d vacant. Spawning background C2 process...", args.c2_port
+            )
             c2_log_file = open("/tmp/c2_server.log", "a")
-            cmd = [sys.executable, "-m", "resilient_pid.c2.c2_server", "--port", str(args.c2_port)]
+            cmd = [
+                sys.executable,
+                "-m",
+                "resilient_pid.c2.c2_server",
+                "--port",
+                str(args.c2_port),
+            ]
             if args.enable_ui:
                 cmd.append("--enable-ui")
             c2_proc = subprocess.Popen(cmd, stdout=c2_log_file, stderr=c2_log_file)
@@ -273,10 +373,10 @@ def main() -> None:
         else:
             logger.info("Existing C2 server detected on port %d.", args.c2_port)
 
-        init_payload: Dict[str, Any] = {
+        init_payload: dict[str, Any] = {
             "ui_enabled": args.enable_ui,
             "algorithm": args.mode,
-            "is_running": True
+            "is_running": True,
         }
         if args.setpoint is not None:
             init_payload["setpoint"] = args.setpoint
