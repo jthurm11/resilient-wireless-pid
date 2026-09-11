@@ -13,3 +13,6 @@ dist/
 .venv/
 env/
 venv/
+
+# Dev environment artifacts
+.DS_Store
