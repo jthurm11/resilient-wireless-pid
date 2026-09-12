@@ -9,7 +9,80 @@
   "panels": [
     {
       "collapsed": false,
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "gridPos": { "h": 3, "w": 8, "x": 0, "y": 0 },
+      "id": 101,
+      "title": "Runtime Environment",
+      "type": "stat",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> keep(columns: [\"environment\"])\n  |> last()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 3, "w": 8, "x": 8, "y": 0 },
+      "id": 102,
+      "title": "Active Control Law",
+      "type": "stat",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> keep(columns: [\"algorithm\"])\n  |> last()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "purple", "value": null }]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 3, "w": 8, "x": 16, "y": 0 },
+      "id": 103,
+      "title": "Mean RTT Latency",
+      "type": "stat",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt_ms\")\n  |> mean()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 30 },
+              { "color": "red", "value": 60 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 3 },
       "id": 1,
       "title": "Process Variable (PV) vs Setpoint (SP)",
       "type": "timeseries",
@@ -43,7 +116,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 9 },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 12 },
       "id": 2,
       "title": "Actuator Output u(t)",
       "type": "timeseries",
@@ -60,7 +133,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 9 },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 12 },
       "id": 3,
       "title": "Network Transport Latency (RTT ms)",
       "type": "timeseries",
@@ -80,7 +153,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 9 },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 12 },
       "id": 4,
       "title": "Control Tracking Error",
       "type": "timeseries",
@@ -99,7 +172,7 @@
   "refresh": "1s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["dcs", "pid", "capstone"],
+  "tags": ["dcs", "pid"],
   "time": { "from": "now-2m", "to": "now" },
   "timezone": "browser",
   "title": "Wireless PID Telemetry Dashboard",

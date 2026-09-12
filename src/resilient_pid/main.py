@@ -266,11 +266,16 @@ class ControllerRuntime:
 
     def _run_sampling_loop(self) -> None:
         next_tick = time.perf_counter()
+        last_tick = time.perf_counter()
         mock_pv = 0.0
 
         for _ in range(self.args.steps if self.args.no_c2 else sys.maxsize):
             if self._stop_event.is_set():
                 break
+
+            now = time.perf_counter()
+            dt_exec_ms = (now - last_tick) * 1000.0
+            last_tick = now
 
             with self.lock:
                 if not self.is_running:
@@ -291,9 +296,7 @@ class ControllerRuntime:
             rtt_ms = None
 
             if isinstance(controller, ResilientPID):
-                u_t = controller.update(
-                    setpoint=sp, pv_actual=self.last_known_pv, is_loss=False
-                )
+                u_t = controller.update(setpoint=sp, pv_actual=self.last_known_pv, is_loss=False)
             else:
                 u_t = controller.update(setpoint=sp, pv=self.last_known_pv)
 
@@ -303,9 +306,7 @@ class ControllerRuntime:
                 rtt_ms = 0.5
             else:
                 t_tx = time.perf_counter()
-                payload = json.dumps(
-                    {"seq": self.seq_num, "u": u_t, "t_send": t_tx}
-                ).encode("utf-8")
+                payload = json.dumps({"seq": self.seq_num, "u": u_t, "t_send": t_tx}).encode("utf-8")
                 try:
                     if self._socket is not None:
                         self._socket.sendto(payload, self.plant_addr)
@@ -323,9 +324,7 @@ class ControllerRuntime:
                     rtt_ms = None
 
             if is_loss and isinstance(controller, ResilientPID):
-                u_t = controller.update(
-                    setpoint=sp, pv_actual=self.last_known_pv, is_loss=True
-                )
+                u_t = controller.update(setpoint=sp, pv_actual=self.last_known_pv, is_loss=True)
                 self.last_known_pv = controller.y_est
 
             error = sp - self.last_known_pv
@@ -337,6 +336,8 @@ class ControllerRuntime:
                 control_signal=u_t,
                 error=error,
                 rtt_ms=rtt_ms,
+                dt_exec_ms=dt_exec_ms,
+                is_loss=is_loss,
             )
 
             self.seq_num += 1

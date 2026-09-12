@@ -19,6 +19,8 @@ services:
     hostname: dcs-ctrl-node
     cap_add:
       - NET_ADMIN
+    extra_hosts:
+      - "influxdb:127.0.0.1"
     networks:
       dcs_net:
         ipv4_address: 10.10.10.1
@@ -28,8 +30,6 @@ services:
       - "8086:8086"   # InfluxDB Engine
     volumes:
       - ../../:/opt/resilient-wireless-pid
-    environment:
-      - PYTHONDONTWRITEBYTECODE=1
     command: tail -f /dev/null
 
   influxdb:
@@ -72,6 +72,7 @@ services:
         condition: service_healthy
     environment:
       - PYTHONDONTWRITEBYTECODE=1
+      - DCS_ENV=docker
       - INFLUXDB_URL=http://127.0.0.1:8086
       - INFLUXDB_TOKEN=testbed_secret_token_123
       - INFLUXDB_ORG=resilient_pid

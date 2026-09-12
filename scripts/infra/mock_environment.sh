@@ -258,6 +258,7 @@ create_lxc() {
 
   msg_info "Configuring application workspace on dcs-ctrl-node (CT 201)"
   pct exec 201 -- bash -c "
+    echo DCS_ENV=proxmox_lxc >> /etc/environment
     if [ ! -d /opt/resilient-wireless-pid ]; then
       git clone https://github.com/jthurm11/resilient-wireless-pid.git /opt/resilient-wireless-pid >/dev/null 2>&1
     fi
@@ -273,6 +274,7 @@ create_lxc() {
 
   msg_info "Configuring application workspace on dcs-plant-node (CT 202)"
   pct exec 202 -- bash -c "
+    echo DCS_ENV=proxmox_lxc >> /etc/environment
     if [ ! -d /opt/resilient-wireless-pid ]; then
       git clone https://github.com/jthurm11/resilient-wireless-pid.git /opt/resilient-wireless-pid >/dev/null 2>&1
     fi

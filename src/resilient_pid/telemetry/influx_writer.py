@@ -1,4 +1,5 @@
 import logging
+import os
 import queue
 import threading
 import time
@@ -40,6 +41,9 @@ class InfluxWriter:
         self.flush_interval_sec = flush_interval_sec
         self.dry_run = dry_run
 
+        # Zero-overhead environment tag resolution via environment variable
+        self.environment: str = os.getenv("DCS_ENV", "bare_metal").lower()
+
         self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max_queue_size)
         self._active: bool = False
         self._worker_thread: threading.Thread | None = None
@@ -49,9 +53,7 @@ class InfluxWriter:
         if not self.dry_run:
             self._connect_client()
         else:
-            logger.info(
-                "InfluxWriter initialized in DRY-RUN mode. Metrics will be printed to logger."
-            )
+            logger.info("InfluxWriter initialized in DRY-RUN mode.")
 
     def _connect_client(self) -> None:
         """Establish connection with InfluxDB client."""
@@ -59,42 +61,32 @@ class InfluxWriter:
             self._client = InfluxDBClient(url=self.url, token=self.token, org=self.org)
             self._write_api = self._client.write_api(write_options=SYNCHRONOUS)
             logger.info(
-                f"InfluxWriter successfully connected to InfluxDB at {self.url} (Org: {self.org}, Bucket: {self.bucket})"
+                f"Connected to InfluxDB at {self.url} (Org: {self.org}, Bucket: {self.bucket}, Env: {self.environment})"
             )
         except Exception as e:
             logger.error(f"Failed to connect to InfluxDB at {self.url}: {e}")
-            logger.warning("Falling back to DRY-RUN mode due to connection failure.")
             self.dry_run = True
 
     def start(self) -> None:
         """Start the background consumer worker thread."""
         if self._active:
-            logger.warning("InfluxWriter background worker is already running.")
             return
-
         self._active = True
         self._worker_thread = threading.Thread(
             target=self._worker_loop, name="InfluxWriterWorker", daemon=True
         )
         self._worker_thread.start()
-        logger.info("InfluxWriter background worker thread started.")
 
     def stop(self) -> None:
         """Stop the background worker thread and flush remaining points."""
         if not self._active:
             return
-
-        logger.info(
-            "Stopping InfluxWriter background worker thread... Flushing remaining points."
-        )
         self._active = False
         if self._worker_thread:
             self._worker_thread.join(timeout=3.0)
-
         if self._client:
             try:
                 self._client.close()
-                logger.info("InfluxDB client connection closed safely.")
             except Exception as e:
                 logger.error(f"Error closing InfluxDB client: {e}")
 
@@ -107,33 +99,39 @@ class InfluxWriter:
         control_signal: float,
         error: float,
         rtt_ms: float | None = None,
+        dt_exec_ms: float | None = None,
+        is_loss: bool = False,
     ) -> None:
         """Push a control telemetry data point to the background queue."""
         now_ns = time.time_ns()
         metric_data: dict[str, Any] = {
             "measurement": "control_telemetry",
-            "tags": {"trial_id": trial_id, "algorithm": algorithm},
+            "tags": {
+                "trial_id": trial_id,
+                "algorithm": algorithm,
+                "environment": self.environment,
+            },
             "fields": {
                 "setpoint": float(setpoint),
                 "process_variable": float(process_variable),
                 "control_signal": float(control_signal),
                 "error": float(error),
+                "is_loss": 1.0 if is_loss else 0.0,
             },
             "timestamp": now_ns,
         }
 
         if rtt_ms is not None:
             metric_data["fields"]["rtt_ms"] = float(rtt_ms)
+        if dt_exec_ms is not None:
+            metric_data["fields"]["dt_exec_ms"] = float(dt_exec_ms)
 
         try:
             self._queue.put_nowait(metric_data)
         except queue.Full:
             try:
-                dropped_item = self._queue.get_nowait()
+                self._queue.get_nowait()
                 self._queue.put_nowait(metric_data)
-                logger.warning(
-                    f"Telemetry queue full. Dropped oldest metric from trial {dropped_item['tags']['trial_id']}."
-                )
             except queue.Empty:
                 pass
 
@@ -145,7 +143,6 @@ class InfluxWriter:
         while self._active or not self._queue.empty():
             try:
                 metric_data = self._queue.get(timeout=0.1)
-
                 point = Point(metric_data["measurement"])
                 for k, v in metric_data["tags"].items():
                     point.tag(k, v)
@@ -155,7 +152,6 @@ class InfluxWriter:
 
                 buffered_points.append(point)
                 self._queue.task_done()
-
             except queue.Empty:
                 pass
 
@@ -170,22 +166,11 @@ class InfluxWriter:
                 last_flush_time = current_time
 
     def _flush_batch(self, points: list[Point]) -> None:
-        """Write a batch of points to InfluxDB or log if dry-run."""
         if self.dry_run:
-            for p in points:
-                logger.info(f"[DRY-RUN WRITE]: {p.to_line_protocol()}")
             return
-
         if self._write_api is None:
-            logger.error("Attempted to flush points but write_api is not initialized.")
             return
-
         try:
             self._write_api.write(bucket=self.bucket, org=self.org, record=points)
-            logger.debug(
-                f"Successfully flushed batch of {len(points)} metrics to InfluxDB."
-            )
         except Exception as e:
-            logger.error(
-                f"Error flushing telemetry batch of size {len(points)} to InfluxDB: {e}"
-            )
+            logger.error(f"Error flushing telemetry batch to InfluxDB: {e}")
