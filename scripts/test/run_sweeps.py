@@ -202,7 +202,7 @@ def main():
     parser.add_argument("--duration", type=float, default=20.0, help="Duration of each step response trial in seconds")
     parser.add_argument("--setpoint", type=float, default=70.0, help="Target process variable setpoint")
     parser.add_argument("--output", default="data/sweeps/benchmark_results.csv", help="Destination CSV path")
-    parser.add_argument("--c2-url", default="http://127.0.0.1:5000", help="C2 REST API Base URL")
+    parser.add_argument("--c2-url", default="http://127.0.0.1:5050", help="C2 REST API Base URL")
     args = parser.parse_args()
 
     # Define matrix of experimental test vectors

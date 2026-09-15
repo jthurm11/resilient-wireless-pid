@@ -6,7 +6,7 @@ The only functional deviation from bare metal is the plant runtime: virtual test
 
 Both Docker and Proxmox LXC tracks establish identical socket endpoints and network boundaries:
 * **`dcs-ctrl-node`:** `10.10.10.1` (`127.0.0.1` for intra-node IPC)
-  * `10.10.10.1:5000` (TCP/HTTP) $\to$ Command & Control (C2) Orchestrator API / Web Console
+  * `10.10.10.1:5050` (TCP/HTTP) $\to$ Command & Control (C2) Orchestrator API / Web Console
   * `10.10.10.1:8086` (TCP/HTTP) $\to$ InfluxDB v2 Line Protocol Engine
   * `10.10.10.1:3000` (TCP/HTTP) $\to$ Grafana Dashboards
 * **`dcs-plant-node`:** `10.10.10.2`

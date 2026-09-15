@@ -15,7 +15,7 @@ All observability services reside on `dcs-ctrl-node` (Node 1). When running unde
 | :--- | :--- | :--- | :--- | :--- |
 | **InfluxDB v2** | `http://localhost:8086` | `http://<NODE1_IP>:8086` | `admin` / `adminpassword` | **Org:** `resilient_pid`<br>**Bucket:** `wireless_pid_metrics` |
 | **Grafana** | `http://localhost:3000` | `http://<NODE1_IP>:3000` | `admin` / `admin` | Auto-provisioned from `configs/grafana/` |
-| **C2 Console** | `http://localhost:5000` | `http://<NODE1_IP>:5000` | None (Open REST/UI) | Supervisory control and state store |
+| **C2 Console** | `http://localhost:5050` | `http://<NODE1_IP>:5050` | None (Open REST/UI) | Supervisory control and state store |
 
 ---
 

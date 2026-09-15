@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from influxdb_client import InfluxDBClient, Point, WritePrecision
-from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client.client.write_api import ASYNCHRONOUS
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -15,19 +15,14 @@ logger = logging.getLogger("InfluxTelemetry")
 
 
 class InfluxWriter:
-    """A high-frequency, thread-safe, non-blocking telemetry writer for InfluxDB v2.
-
-    Uses an internal queue and background worker thread to buffer and execute batch
-    writes, ensuring that the main real-time control loop (PID/Smith Predictor)
-    never suffers from network-induced blocking or CPU jitter caused by database I/O.
-    """
+    """A high-frequency, thread-safe, non-blocking telemetry writer for InfluxDB v2."""
 
     def __init__(
         self,
-        url: str,
-        token: str,
-        org: str,
-        bucket: str,
+        url: str = os.getenv("INFLUXDB_URL", "http://localhost:8086"),
+        token: str = os.getenv("INFLUXDB_TOKEN", "testbed_secret_token_123"),
+        org: str = os.getenv("INFLUXDB_ORG", "resilient_pid"),
+        bucket: str = os.getenv("INFLUXDB_BUCKET", "wireless_pid_metrics"),
         batch_size: int = 100,
         flush_interval_sec: float = 0.5,
         max_queue_size: int = 10000,
@@ -41,7 +36,6 @@ class InfluxWriter:
         self.flush_interval_sec = flush_interval_sec
         self.dry_run = dry_run
 
-        # Zero-overhead environment tag resolution via environment variable
         self.environment: str = os.getenv("DCS_ENV", "bare_metal").lower()
 
         self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max_queue_size)
@@ -58,8 +52,14 @@ class InfluxWriter:
     def _connect_client(self) -> None:
         """Establish connection with InfluxDB client."""
         try:
-            self._client = InfluxDBClient(url=self.url, token=self.token, org=self.org)
-            self._write_api = self._client.write_api(write_options=SYNCHRONOUS)
+            self._client = InfluxDBClient(
+                url=self.url,
+                token=self.token,
+                org=self.org,
+                timeout=1000,
+            )
+            # Asynchronous write mode ensures worker loops never stall the pipeline
+            self._write_api = self._client.write_api(write_options=ASYNCHRONOUS)
             logger.info(
                 f"Connected to InfluxDB at {self.url} (Org: {self.org}, Bucket: {self.bucket}, Env: {self.environment})"
             )
@@ -84,6 +84,7 @@ class InfluxWriter:
         self._active = False
         if self._worker_thread:
             self._worker_thread.join(timeout=3.0)
+
         if self._client:
             try:
                 self._client.close()
@@ -173,4 +174,4 @@ class InfluxWriter:
         try:
             self._write_api.write(bucket=self.bucket, org=self.org, record=points)
         except Exception as e:
-            logger.error(f"Error flushing telemetry batch to InfluxDB: {e}")
+            logger.error(f"Error writing batch to InfluxDB: {e}")

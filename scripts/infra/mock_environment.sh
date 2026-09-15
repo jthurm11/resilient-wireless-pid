@@ -109,7 +109,7 @@ create_docker() {
   msg_ok "All Docker nodes online"
 
   echo -e "\n${GN}${BOLD}Docker Mock Testbed Ready.${CL}"
-  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} 10.10.10.1 (UI: http://localhost:5000 | Grafana: http://localhost:3000)"
+  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} 10.10.10.1 (UI: http://localhost:5050 | Grafana: http://localhost:3000)"
   echo -e "${TAB}${BOLD}dcs-plant-node:${CL} 10.10.10.2 (UDP Socket: 5005)\n"
 }
 

@@ -23,7 +23,7 @@ The testbed decouples real-time embedded control execution from human telemetry 
 |                                                                                 |
 |   +----------------------------+           +--------------------------------+   |
 |   | Control Runtime (main.py)  | <=======> | C2 Orchestrator (c2_server.py) |   |
-|   | (PID / Smith / Resilient)  |           | (REST API / Web Console :5000) |   |
+|   | (PID / Smith / Resilient)  |           | (REST API / Web Console :5050) |   |
 |   +-------------+--------------+           +--------------------------------+   |
 |                 | (via 127.0.0.1:8086)                                          |
 |                 v                                                               |
@@ -52,7 +52,7 @@ Isolated DCS Subnet (10.10.10.0/24 UDP)
 graph TD
     subgraph CtrlNode["Controller Node: dcs-ctrl-node (10.10.10.1)"]
         CLR["Control Loop Runtime<br/><i>(run-controller)</i>"]
-        C2["C2 Orchestrator<br/><i>(Port :5000)</i>"]
+        C2["C2 Orchestrator<br/><i>(Port :5050)</i>"]
         INF["InfluxDB v2 Engine<br/><i>(Port :8086)</i>"]
         GRA["Grafana Dashboards<br/><i>(Port :3000)</i>"]
         TC["Kernel tc/netem qdisc<br/><i>(Egress Shaping)</i>"]
@@ -180,13 +180,13 @@ Launch the real-time controller runtime (automatically boots C2 orchestration wi
 run-controller --mode baseline --setpoint 50.0 --enable-ui
 ```
 
-* **C2 Operator UI:** Navigate to `http://localhost:5000` (or `http://<NODE1_IP>:5000`) to adjust setpoints or switch control algorithms on the fly.
+* **C2 Operator UI:** Navigate to `http://localhost:5050` (or `http://<NODE1_IP>:5050`) to adjust setpoints or switch control algorithms on the fly.
 
 * **Headless C2 Execution:** Update parameters programmatically via REST:
 
 ```bash
 # Adjust for NODE1_IP as needed
-curl -s -X POST http://127.0.0.1:5000/api/control \
+curl -s -X POST http://127.0.0.1:5050/api/control \
   -H "Content-Type: application/json" \
   -d '{"algorithm": "smith", "setpoint": 65.0}'
 ```

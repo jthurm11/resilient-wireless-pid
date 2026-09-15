@@ -26,16 +26,20 @@ services:
         ipv4_address: 10.10.10.1
     ports:
       - "3000:3000"   # Grafana UI
-      - "5000:5000"   # C2 API / Console
+      - "5050:5050"   # C2 API / Console
       - "8086:8086"   # InfluxDB Engine
     volumes:
       - ../../:/opt/resilient-wireless-pid
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
     command: tail -f /dev/null
 
   influxdb:
     image: influxdb:2.7
     container_name: dcs-influxdb
     network_mode: "service:dcs-ctrl-node"
+    tmpfs:
+      - /var/lib/influxdb2:rw,noexec,nosuid,size=512m
     environment:
       - DOCKER_INFLUXDB_INIT_MODE=setup
       - DOCKER_INFLUXDB_INIT_USERNAME=admin
@@ -73,6 +77,7 @@ services:
     environment:
       - PYTHONDONTWRITEBYTECODE=1
       - DCS_ENV=docker
+      - C2_PORT=5050
       - INFLUXDB_URL=http://127.0.0.1:8086
       - INFLUXDB_TOKEN=testbed_secret_token_123
       - INFLUXDB_ORG=resilient_pid

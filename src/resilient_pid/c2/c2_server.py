@@ -151,8 +151,8 @@ def parse_args():
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("C2_PORT", "5000")),
-        help="Port (default: 5000)",
+        default=int(os.getenv("C2_PORT", "5050")),
+        help="Port (default: 5050)",
     )
     parser.add_argument(
         "--enable-ui", action="store_true", help="Enable HTML UI at / on boot"

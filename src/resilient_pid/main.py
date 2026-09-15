@@ -87,7 +87,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--c2-port",
         type=int,
-        default=int(os.getenv("C2_PORT", "5000")),
+        default=int(os.getenv("C2_PORT", "5050")),
         help="Supervisory C2 HTTP port",
     )
     parser.add_argument(
