@@ -2,7 +2,6 @@
 
 A software-defined hardening and evaluation framework designed to quantify and mitigate the impact of non-deterministic wireless network dynamics (jitter, packet loss, and latency) on real-time Distributed Control Systems (DCS).
 
-
 ## Overview
 
 Industrial IoT (IIoT) control loops operating over shared wireless channels (e.g., IEEE 802.11) face significant stability degradation from stochastic latency, packet loss, and channel contention. This framework enables:
@@ -10,43 +9,9 @@ Industrial IoT (IIoT) control loops operating over shared wireless channels (e.g
 - Direct empirical benchmarking across Standard Discrete PID, Dead-Time Compensated Smith Predictor, and Predictive State-Estimating Resilient Controllers.
 - Real-time sub-millisecond telemetry extraction into an InfluxDB v2/Grafana pipeline for stability boundary mapping and settling-time analysis.
 
-
 ## System Architecture
 
 The testbed decouples real-time embedded control execution from human telemetry and supervisory orchestration across an isolated `10.10.10.0/24` subnet:
-
-
-```
-
-+---------------------------------------------------------------------------------+
-| Controller Node: dcs-ctrl-node (10.10.10.1)                                     |
-|                                                                                 |
-|   +----------------------------+           +--------------------------------+   |
-|   | Control Runtime (main.py)  | <=======> | C2 Orchestrator (c2_server.py) |   |
-|   | (PID / Smith / Resilient)  |           | (REST API / Web Console :5050) |   |
-|   +-------------+--------------+           +--------------------------------+   |
-|                 | (via 127.0.0.1:8086)                                          |
-|                 v                                                               |
-|   +----------------------------+           +--------------------------------+   |
-|   | InfluxDB v2 Engine (:8086) | <=======> | Grafana Visualizer (:3000)     |   |
-|   +----------------------------+           +--------------------------------+   |
-|                 |                                                               |
-|                 +--- [ Linux Kernel tc/netem qdisc (wlan0) ]      |
-+---------------------------------------+-----------------------------------------+
-|
-Isolated DCS Subnet (10.10.10.0/24 UDP)
-|
-+---------------------------------------+-----------------------------------------+
-| Plant Node: dcs-plant-node (10.10.10.2)                                         |
-|                                                                                 |
-|   +-------------------------------------------------------------------------+   |
-|   | Plant Runtime (plant_interface.py :5005 UDP)                            |   |
-|   | - Simulated Mode: Continuous Aerodynamic ODE Twin (RK4 Integration)     |   |
-|   | - Hardware Mode:  Physical GPIO/PWM Fan & I2C Distance Sensor Bus       |   |
-|   +-------------------------------------------------------------------------+   |
-+---------------------------------------------------------------------------------+
-
-```
 
 ```mermaid
 graph TD
@@ -77,27 +42,33 @@ graph TD
 
 ### Core Components
 
-1. **Control Runtime Engine (`src/resilient_pid/controller/`)**: Discrete control laws supporting runtime switching between standard PID (`pid.py`), Smith Predictor dead-time cancellation (`smith_predictor.py`), and resilient observer estimation during dropouts (`resilient_pid.py`).
+* **Control Runtime Engine (`src/resilient_pid/controller/`)**: Discrete control laws supporting runtime switching between standard PID, Smith Predictor dead-time cancellation, and resilient observer estimation during dropouts.
 
-2. **Plant Abstraction Layer (`src/resilient_pid/plant/`)**: Polymorphic execution target supporting physical PWM/I2C peripheral drivers (`HardwarePlant`) or a 4th-Order Runge-Kutta continuous aerodynamic twin (`SimulatedPlant`).
 
-3. **Telemetry Pipeline (`src/resilient_pid/telemetry/`)**: Asynchronous, non-blocking ingestion client streaming process variables ($PV$), setpoints ($SP$), control efforts ($u(t)$), and round-trip times ($RTT$) to InfluxDB v2.
+* **Plant Abstraction Layer (`src/resilient_pid/plant/`)**: Polymorphic execution target supporting physical PWM/I2C peripheral drivers (`HardwarePlant`) or a 4th-Order Runge-Kutta continuous aerodynamic twin (`SimulatedPlant`).
 
-4. **Command & Control Console (`src/resilient_pid/c2/`)**: REST API and operator web console for live setpoint adjustments, algorithm toggling, and trial coordination.
+
+* **Telemetry Pipeline (`src/resilient_pid/telemetry/`)**: Asynchronous, non-blocking ingestion client streaming process variables, setpoints, control efforts, and round-trip times to InfluxDB v2.
+
+
+* **Command & Control Console (`src/resilient_pid/c2/`)**: REST API and operator web console for live setpoint adjustments, algorithm toggling, and trial coordination.
 
 
 
 ## Setup & Prerequisites
 
-### Requirements
-
 * **Target OS**: Debian 13 (Trixie) or Raspberry Pi OS (64-bit).
+
 
 * **Kernel Modules**: `sch_netem`, `cls_u32` loaded into the active host/container kernel.
 
+
 * **Runtimes**: Python 3.10+, Docker Engine 24.0+ (with Compose v2 plugin), and `iproute2`.
 
+
 * **Privileges**: Elevated access (`sudo` or `CAP_NET_ADMIN`) for network queuing discipline manipulation.
+
+
 
 > **Note on Virtual Testing:** To provision isolated Docker containers or Proxmox LXC testbeds with zero environment drift, refer to the [Mock Environment Guide](docs/development/mock_environment_guide.md).
 > 
@@ -117,7 +88,7 @@ pip install -e .
 
 ### 2. Launch Telemetry Infrastructure
 
-The time-series observability stack (InfluxDB v2 and Grafana) runs as containerized microservices managed via `scripts/infra/telemetry_stack.sh`:
+The time-series observability stack runs as containerized microservices managed via `scripts/infra/telemetry_stack.sh`:
 
 ```bash
 # Provision InfluxDB v2 and Grafana
@@ -129,9 +100,6 @@ The time-series observability stack (InfluxDB v2 and Grafana) runs as containeri
 # Validate telemetry pipeline with a synthetic smoke test
 python3 scripts/test/telemetry_smoke_test.py
 ```
-
-* To stop and purge telemetry containers: `./scripts/infra/telemetry_stack.sh destroy`
-
 
 ### 3. Verify Traffic Control Capabilities
 
@@ -155,48 +123,52 @@ Follow this procedure to run an initial closed-loop test across the testbed:
 Start the plant runtime daemon listening on UDP port `5005`:
 
 ```bash
-# Explicitly select software twin when testing without physical hardware
 run-plant --mode simulate --host 0.0.0.0 --port 5005
 ```
 
 ### 2. Controller Node (`dcs-ctrl-node` @ 10.10.10.1)
 
-Apply stochastic network degradation to the egress interface:
+Identify your active egress interface pointing to the plant node (e.g., `wlan0`):
 
 ```bash
-# Identify active egress interface pointing to the plant node
 IFACE="wlan0"
-
-# Inject 40ms baseline delay, ±10ms Gaussian jitter, and 2% packet loss
-sudo tc qdisc add dev $IFACE root netem delay 40ms 10ms distribution normal loss 2%
-
-# Verify transit latency to dcs-plant-node
-ping -c 5 10.10.10.2
 ```
 
-Launch the real-time controller runtime (automatically boots C2 orchestration with the UI enabled):
+Launch the real-time controller runtime to establish the nominal baseline:
 
 ```bash
 run-controller --mode baseline --setpoint 50.0 --enable-ui
 ```
 
-* **C2 Operator UI:** Navigate to `http://localhost:5050` (or `http://<NODE1_IP>:5050`) to adjust setpoints or switch control algorithms on the fly.
+* **Grafana Dashboard:** Navigate to `http://127.0.0.1:3000` (`admin`/`admin`) to inspect real-time tracking error, control effort, and baseline round-trip times.
+
+
+* **C2 Operator UI:** Navigate to `http://127.0.0.1:5050` to adjust setpoints or switch control algorithms dynamically.
+
 
 * **Headless C2 Execution:** Update parameters programmatically via REST:
 
+
 ```bash
-# Adjust for NODE1_IP as needed
-curl -s -X POST http://127.0.0.1:5050/api/control \
+curl -s -X POST [http://127.0.0.1:5050/api/control](http://127.0.0.1:5050/api/control) \
   -H "Content-Type: application/json" \
   -d '{"algorithm": "smith", "setpoint": 65.0}'
 ```
 
+### 3. Inject Network Degradation
 
-* **Grafana Dashboard:** Navigate to `http://localhost:3000` (or `http://<NODE1_IP>:3000`) (`admin`/`admin`) to inspect real-time tracking error, control effort, and round-trip times ($RTT$).
+With the loop stabilized, apply stochastic network degradation to the egress interface to observe destabilization in Grafana:
 
-* **InfluxDB Data Explorer:** Available at `http://localhost:8086` (`admin`/`adminpassword`).
+```bash
+# Inject 40ms baseline delay, ±10ms Gaussian jitter, and 2% packet loss
+sudo tc qdisc add dev $IFACE root netem delay 40ms 10ms distribution normal loss 2%
 
-### 3. Clear Network Emulation
+# Verify active queue rules and transit latency
+tc -s qdisc show dev $IFACE
+ping -c 5 10.10.10.2
+```
+
+### 4. Clear Network Emulation
 
 Restore the interface to line-rate execution:
 
@@ -204,6 +176,7 @@ Restore the interface to line-rate execution:
 sudo tc qdisc del dev $IFACE root
 ```
 
+---
 
 ## Attribution & Prior Art
 
