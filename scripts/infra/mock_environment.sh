@@ -247,6 +247,58 @@ pve_install_docker() {
   msg_ok "Docker active inside CT ${ctid}"
 }
 
+pve_setup_systemd_services() {
+  msg_info "Deploying systemd service units to LXC containers"
+
+  # Provision and enable the plant service on CT 202
+  pct exec 202 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-plant.service
+[Unit]
+Description=DCS Plant Runtime Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/resilient-wireless-pid
+ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.plant.plant_interface --mode simulate --host 0.0.0.0 --port 5005
+Restart=always
+RestartSec=3
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=80
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now dcs-plant.service"
+
+  # Provision and enable the controller service on CT 201
+  pct exec 201 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-controller.service
+[Unit]
+Description=DCS Real Time Controller and Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/resilient-wireless-pid
+ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.main --enable-ui
+Restart=on-failure
+RestartSec=5
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=85
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now dcs-controller.service"
+
+  msg_ok "Systemd daemons deployed and active on CT 201 and CT 202"
+}
+
 create_lxc() {
   echo -e "${BOLD}Deploying Native Proxmox LXC Infrastructure...${CL}"
   pve_check_storage
@@ -293,6 +345,9 @@ create_lxc() {
     pip install -e . >/dev/null 2>&1
   "
   msg_ok "Workspace ready on dcs-plant-node"
+
+  # Deploy and activate systemd runtimes across the mock environment
+  pve_setup_systemd_services
 
   echo -e "\n${GN}${BOLD}Proxmox Testbed Fully Provisioned.${CL}"
   echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} CT 201 | wlan0: 10.10.10.1/24"
