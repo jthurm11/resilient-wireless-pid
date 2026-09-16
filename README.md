@@ -1,5 +1,7 @@
 # Resilient Wireless Control: Hardening PID Loops against Network Jitter
 
+[![DCS CI/CD](https://github.com/jthurm11/resilient-wireless-pid/actions/workflows/ci.yml/badge.svg)](https://github.com/jthurm11/resilient-wireless-pid/actions/workflows/ci.yml)
+
 A software-defined hardening and evaluation framework designed to quantify and mitigate the impact of non-deterministic wireless network dynamics (jitter, packet loss, and latency) on real-time Distributed Control Systems (DCS).
 
 ## Overview
