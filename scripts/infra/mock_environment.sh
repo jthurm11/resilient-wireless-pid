@@ -261,6 +261,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/resilient-wireless-pid
+EnvironmentFile=/etc/environment
 ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.plant.plant_interface --mode simulate --host 0.0.0.0 --port 5005
 Restart=always
 RestartSec=3
@@ -273,6 +274,12 @@ EOF
 systemctl daemon-reload
 systemctl enable --now dcs-plant.service"
 
+  # Inject environment identification tags
+  pct exec 202 -- bash -c '
+    echo "DCS_ENV=proxmox_lxc" >> /etc/environment
+    echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
+  '
+
   # Provision and enable the controller service on CT 201
   pct exec 201 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-controller.service
 [Unit]
@@ -284,6 +291,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/resilient-wireless-pid
+EnvironmentFile=/etc/environment
 ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.main --enable-ui
 Restart=on-failure
 RestartSec=5
@@ -295,6 +303,12 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable --now dcs-controller.service"
+
+    # Inject environment identification tags
+  pct exec 201 -- bash -c '
+    echo "DCS_ENV=proxmox_lxc" >> /etc/environment
+    echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
+  '
 
   msg_ok "Systemd daemons deployed and active on CT 201 and CT 202"
 }
@@ -317,7 +331,6 @@ create_lxc() {
 
   msg_info "Configuring application workspace on dcs-ctrl-node (CT 201)"
   pct exec 201 -- bash -c "
-    echo DCS_ENV=proxmox_lxc >> /etc/environment
     if [ ! -d /opt/resilient-wireless-pid ]; then
       git clone https://github.com/jthurm11/resilient-wireless-pid.git /opt/resilient-wireless-pid >/dev/null 2>&1
     fi
@@ -333,7 +346,6 @@ create_lxc() {
 
   msg_info "Configuring application workspace on dcs-plant-node (CT 202)"
   pct exec 202 -- bash -c "
-    echo DCS_ENV=proxmox_lxc >> /etc/environment
     if [ ! -d /opt/resilient-wireless-pid ]; then
       git clone https://github.com/jthurm11/resilient-wireless-pid.git /opt/resilient-wireless-pid >/dev/null 2>&1
     fi
