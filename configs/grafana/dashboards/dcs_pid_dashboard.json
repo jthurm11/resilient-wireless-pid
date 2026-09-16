@@ -17,14 +17,19 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\")\n  |> keep(columns: [\"_time\", \"environment\"])\n  |> map(fn: (r) => ({ _time: r._time, _value: r.environment }))\n  |> last(column: \"_value\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\")\n  |> keep(columns: [\"_time\", \"environment\"])\n  |> group()\n  |> map(fn: (r) => ({ _time: r._time, _value: r.environment }))\n  |> last(column: \"_value\")"
         }
       ],
       "fieldConfig": {
         "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" } }
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] }
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
       }
     },
     {
@@ -37,14 +42,19 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\")\n  |> keep(columns: [\"_time\", \"algorithm\"])\n  |> map(fn: (r) => ({ _time: r._time, _value: r.algorithm }))\n  |> last(column: \"_value\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\")\n  |> keep(columns: [\"_time\", \"algorithm\"])\n  |> group()\n  |> map(fn: (r) => ({ _time: r._time, _value: r.algorithm }))\n  |> last(column: \"_value\")"
         }
       ],
       "fieldConfig": {
         "defaults": { "color": { "mode": "fixed", "fixedColor": "purple" } }
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] }
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
       }
     },
     {

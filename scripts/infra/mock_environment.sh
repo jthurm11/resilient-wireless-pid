@@ -73,6 +73,13 @@ auto_detect_target() {
   if [ "$has_pve" = true ] && [ "$has_docker" = false ]; then
     TARGET="lxc"
   elif [ "$has_pve" = false ] && [ "$has_docker" = true ]; then
+    if ! docker info >/dev/null 2>&1; then
+      if [[ "$OSTYPE" == darwin* ]]; then
+        msg_error "Docker is installed but not running. Try starting the Docker API: 'open -a Docker' "
+      else
+        msg_error "Docker is installed but not running."
+      fi
+    fi
     TARGET="docker"
   elif [ "$has_pve" = true ] && [ "$has_docker" = true ]; then
     if [ -t 0 ]; then
