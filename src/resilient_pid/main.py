@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Protocol, Union
+from typing import Any, Protocol
 
 import requests
 
@@ -37,7 +37,7 @@ class ControllerProtocol(Protocol):
     def update(self, *args: Any, **kwargs: Any) -> float: ...
 
 
-ControllerType = Union[DiscretePID, SmithPredictor, ResilientPID]
+ControllerType = DiscretePID | SmithPredictor | ResilientPID
 
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
@@ -296,7 +296,9 @@ class ControllerRuntime:
             rtt_ms = None
 
             if isinstance(controller, ResilientPID):
-                u_t = controller.update(setpoint=sp, pv_actual=self.last_known_pv, is_loss=False)
+                u_t = controller.update(
+                    setpoint=sp, pv_actual=self.last_known_pv, is_loss=False
+                )
             else:
                 u_t = controller.update(setpoint=sp, pv=self.last_known_pv)
 
@@ -306,7 +308,9 @@ class ControllerRuntime:
                 rtt_ms = 0.5
             else:
                 t_tx = time.perf_counter()
-                payload = json.dumps({"seq": self.seq_num, "u": u_t, "t_send": t_tx}).encode("utf-8")
+                payload = json.dumps(
+                    {"seq": self.seq_num, "u": u_t, "t_send": t_tx}
+                ).encode("utf-8")
                 try:
                     if self._socket is not None:
                         self._socket.sendto(payload, self.plant_addr)
@@ -324,7 +328,9 @@ class ControllerRuntime:
                     rtt_ms = None
 
             if is_loss and isinstance(controller, ResilientPID):
-                u_t = controller.update(setpoint=sp, pv_actual=self.last_known_pv, is_loss=True)
+                u_t = controller.update(
+                    setpoint=sp, pv_actual=self.last_known_pv, is_loss=True
+                )
                 self.last_known_pv = controller.y_est
 
             error = sp - self.last_known_pv

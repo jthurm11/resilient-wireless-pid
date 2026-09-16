@@ -1,4 +1,5 @@
 from collections import deque
+
 from resilient_pid.controller.pid import DiscretePID
 
 
@@ -21,7 +22,7 @@ class SmithPredictor:
         self.dt = dt
         self.output_limits = output_limits
 
-        # Calibrated 2nd-order discrete model for PingPongPID: 
+        # Calibrated 2nd-order discrete model for PingPongPID:
         #   G(z) = (b1*z^-1 + b2*z^-2)/(1 + a1*z^-1 + a2*z^-2)
         self.a1 = -1.6705
         self.a2 = 0.6967
@@ -34,7 +35,9 @@ class SmithPredictor:
         self.u_model_2 = 0.0
 
         self.delay_steps = max(1, int(round(plant_delay_ms / (dt * 1000.0))))
-        self.delay_buffer: deque[float] = deque([0.0] * self.delay_steps, maxlen=self.delay_steps)
+        self.delay_buffer: deque[float] = deque(
+            [0.0] * self.delay_steps, maxlen=self.delay_steps
+        )
 
     def reset(self) -> None:
         self.pid.reset()
