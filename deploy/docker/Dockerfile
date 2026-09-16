@@ -32,5 +32,8 @@ COPY src/ ./src/
 # Install dependencies and entrypoint binaries in editable mode
 RUN pip install -r requirements.txt && \
     pip install -e .
+COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]

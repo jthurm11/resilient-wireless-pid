@@ -73,6 +73,13 @@ auto_detect_target() {
   if [ "$has_pve" = true ] && [ "$has_docker" = false ]; then
     TARGET="lxc"
   elif [ "$has_pve" = false ] && [ "$has_docker" = true ]; then
+    if ! docker info >/dev/null 2>&1; then
+      if [[ "$OSTYPE" == darwin* ]]; then
+        msg_error "Docker is installed but not running. Try starting the Docker API: 'open -a Docker' "
+      else
+        msg_error "Docker is installed but not running."
+      fi
+    fi
     TARGET="docker"
   elif [ "$has_pve" = true ] && [ "$has_docker" = true ]; then
     if [ -t 0 ]; then
@@ -109,7 +116,7 @@ create_docker() {
   msg_ok "All Docker nodes online"
 
   echo -e "\n${GN}${BOLD}Docker Mock Testbed Ready.${CL}"
-  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} 10.10.10.1 (UI: http://localhost:5000 | Grafana: http://localhost:3000)"
+  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} 10.10.10.1 (UI: http://localhost:5050 | Grafana: http://localhost:3000)"
   echo -e "${TAB}${BOLD}dcs-plant-node:${CL} 10.10.10.2 (UDP Socket: 5005)\n"
 }
 
@@ -204,7 +211,7 @@ pve_create_container() {
     --swap 512 \
     --features nesting=1,keyctl=1 \
     --net0 name=eth0,bridge=vmbr0,ip=dhcp \
-    --net1 name=eth1,bridge=vmbr1,ip="${internal_ip}/24" \
+    --net1 name=wlan0,bridge=vmbr1,ip="${internal_ip}/24" \
     --storage "$STORAGE" \
     --rootfs volume="${STORAGE}:8" \
     --unprivileged 0 >/dev/null 2>&1
@@ -238,6 +245,72 @@ pve_install_docker() {
       docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1 && \
     systemctl enable --now docker >/dev/null 2>&1"
   msg_ok "Docker active inside CT ${ctid}"
+}
+
+pve_setup_systemd_services() {
+  msg_info "Deploying systemd service units to LXC containers"
+
+  # Provision and enable the plant service on CT 202
+  pct exec 202 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-plant.service
+[Unit]
+Description=DCS Plant Runtime Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/resilient-wireless-pid
+EnvironmentFile=/etc/environment
+ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.plant.plant_interface --mode simulate --host 0.0.0.0 --port 5005
+Restart=always
+RestartSec=3
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=80
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now dcs-plant.service"
+
+  # Inject environment identification tags
+  pct exec 202 -- bash -c '
+    echo "DCS_ENV=proxmox_lxc" >> /etc/environment
+    echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
+  '
+
+  # Provision and enable the controller service on CT 201
+  pct exec 201 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-controller.service
+[Unit]
+Description=DCS Real Time Controller and Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/resilient-wireless-pid
+EnvironmentFile=/etc/environment
+ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.main --enable-ui
+Restart=on-failure
+RestartSec=5
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=85
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now dcs-controller.service"
+
+    # Inject environment identification tags
+  pct exec 201 -- bash -c '
+    echo "DCS_ENV=proxmox_lxc" >> /etc/environment
+    echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
+  '
+
+  msg_ok "Systemd daemons deployed and active on CT 201 and CT 202"
 }
 
 create_lxc() {
@@ -285,9 +358,12 @@ create_lxc() {
   "
   msg_ok "Workspace ready on dcs-plant-node"
 
+  # Deploy and activate systemd runtimes across the mock environment
+  pve_setup_systemd_services
+
   echo -e "\n${GN}${BOLD}Proxmox Testbed Fully Provisioned.${CL}"
-  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} CT 201 | eth1: 10.10.10.1/24"
-  echo -e "${TAB}${BOLD}dcs-plant-node:${CL} CT 202 | eth1: 10.10.10.2/24\n"
+  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} CT 201 | wlan0: 10.10.10.1/24"
+  echo -e "${TAB}${BOLD}dcs-plant-node:${CL} CT 202 | wlan0: 10.10.10.2/24\n"
 }
 
 destroy_lxc() {

@@ -1,0 +1,144 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "id": 201,
+      "title": "Host Environment Target",
+      "type": "stat",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> keep(columns: [\"_time\", \"environment\"])\n  |> group()\n  |> sort(columns: [\"_time\"], desc: false)\n  |> last(column: \"environment\")\n  |> rename(columns: {environment: \"_value\"})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "mappings": []
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "Value",
+          "values": false
+        },
+        "textMode": "value"
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "id": 202,
+      "title": "Total Drop Events (Loss Window)",
+      "type": "stat",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"is_loss\")\n  |> sum()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 20 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "id": 203,
+      "title": "Mean Loop Delta Time (Target: 50.0ms)",
+      "type": "stat",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"dt_exec_ms\")\n  |> mean()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 55 },
+              { "color": "red", "value": 65 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 204,
+      "title": "Control Loop Execution Jitter (\u0394tk vs 50ms Target)",
+      "type": "timeseries",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 1 },
+          "unit": "ms"
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"dt_exec_ms\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"loop_jitter\")"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 205,
+      "title": "Packet Dropout Impulse Events (1 = Timeout)",
+      "type": "timeseries",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "lineWidth": 1 },
+          "color": { "mode": "fixed", "fixedColor": "red" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"is_loss\")\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)\n  |> yield(name: \"packet_drops\")"
+        }
+      ]
+    }
+  ],
+  "refresh": "1s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["dcs", "infra"],
+  "time": { "from": "now-5m", "to": "now" },
+  "timezone": "browser",
+  "title": "DCS Node Infrastructure & System Health",
+  "uid": "dcs-infra-health"
+}
