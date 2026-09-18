@@ -4,7 +4,7 @@ This module executes a deterministic, headless smoke and performance test for th
 
 Usage:
     # Direct execution:
-    python3 scripts/test/telemetry_validation_test.py
+    python3 tests/telemetry_validation_test.py
 
     # Or via pytest:
     pytest tests/test_telemetry_validation.py -v
@@ -25,7 +25,7 @@ logger = logging.getLogger("TelemetryValidation")
 def run_telemetry_validation():
     """Executes a 100-cycle (50 Hz) synthetic control loop validation test against InfluxWriter."""
 
-    logger.info("Starting Task 2: End-to-End Telemetry Pipeline & Metadata Validation Test")
+    logger.info("Starting End-to-End Telemetry Pipeline & Metadata Validation Test")
     
     # Instantiate writer in dry-run mode to inspect exact line-protocol precision and payload structure
     writer = InfluxWriter(
