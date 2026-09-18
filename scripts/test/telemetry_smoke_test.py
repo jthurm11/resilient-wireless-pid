@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/test_telemetry_pipeline.py
+scripts/test/test_telemetry_pipeline.py
 Synthetic smoke test to validate InfluxDB v2 line protocol ingestion.
 """
 import os

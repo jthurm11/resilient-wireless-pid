@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/run_sweeps.py
+scripts/test/run_sweeps.py
 Automated parameter sweep and metric aggregation harness.
 Orchestrates network profiles, controller architectures, and performance indices.
 """
