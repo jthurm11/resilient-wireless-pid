@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PATH="/opt/venv/bin:$PATH"
 
-# Install POSIX routing, tc netem facilities, build toolchain
+# Install POSIX routing, tc netem facilities, and Python 3.13 build toolchain
 RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
     iputils-ping \
@@ -15,25 +15,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     build-essential \
     python3 \
+    python3-dev \
     python3-pip \
     python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Establish an isolated virtual environment to prevent debian package collision
+# Establish isolated virtual environment to isolate third-party wheels from Debian packages
 RUN python3 -m venv /opt/venv && \
-    pip install --upgrade pip setuptools wheel
+    /opt/venv/bin/pip install --upgrade pip setuptools wheel
 
 WORKDIR /opt/resilient-wireless-pid
 
-# Copy manifests first to leverage Docker layer caching
-COPY requirements.txt pyproject.toml ./
-COPY src/ ./src/
+# Cache third-party dependencies independently of application source code
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
 
-# Install dependencies and entrypoint binaries in editable mode
-RUN pip install -r requirements.txt && \
-    pip install -e .
+# Copy entrypoint wrapper before local source
 COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Copy manifests and source tree, then install console scripts in editable mode
+COPY pyproject.toml ./
+COPY src/ ./src/
+RUN pip install --no-deps -e .
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
