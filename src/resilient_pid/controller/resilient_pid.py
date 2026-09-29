@@ -8,7 +8,7 @@ Executes recursive ARX state estimation and integral freezing during loss events
 try:
     from resilient_pid.controller.pid import DiscretePID
 except ImportError:
-    from pid import DiscretePID
+    from .pid import DiscretePID
 
 
 class ResilientPID:

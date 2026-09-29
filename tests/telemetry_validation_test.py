@@ -108,7 +108,7 @@ def run_telemetry_validation():
     )
 
     print("\n" + "=" * 70)
-    print("TASK 2 TELEMETRY PIPELINE VALIDATION SUMMARY")
+    print("TELEMETRY PIPELINE VALIDATION SUMMARY")
     print("=" * 70)
     print("Target Bucket       : wireless_pid_metrics")
     print(f"Sample Count        : {total_samples}")
