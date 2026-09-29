@@ -1,240 +1,315 @@
 #!/usr/bin/env python3
 """
 scripts/test/run_sweeps.py
-Automated parameter sweep and metric aggregation harness.
-Orchestrates network profiles, controller architectures, and performance indices.
+Automated parameter sweep orchestrator and telemetry snapshot pipeline.
+Coordinates tc/netem kernel qdiscs, C2 REST states, and InfluxDB CSV exports.
 """
-import os
-import sys
-import time
-import subprocess
+
 import argparse
 import logging
-from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+import os
+import subprocess
+import time
 
-import requests
 import pandas as pd
-import numpy as np
+import requests
 from influxdb_client import InfluxDBClient
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-logger = logging.getLogger("SweepHarness")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger("SweepOrchestrator")
 
 
-@dataclass
-class NetworkProfile:
-    name: str
-    delay_ms: float
-    jitter_ms: float
-    loss_pct: float
-    correlation_pct: float = 0.0
+class TrafficController:
+    """Manages Linux kernel tc/netem queuing disciplines via iproute2."""
 
-
-class NetworkEmulationController:
-    """Manages kernel queuing disciplines via POSIX iproute2 (tc)."""
     def __init__(self, interface: str):
+        """
+        Initialize traffic controller interface binding.
+
+        Args:
+            interface (str): Target network interface for egress traffic shaping.
+        """
         self.interface = interface
 
     def clear_rules(self) -> None:
+        """Purge root qdisc to restore clean, unshaped line-rate conditions."""
         cmd = ["tc", "qdisc", "del", "dev", self.interface, "root"]
-        subprocess.run(cmd, stdout=subprocess.DEV_NULL, stderr=subprocess.DEV_NULL)
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0 and "No such file or directory" not in res.stderr:
+            logger.debug(
+                "tc cleanup notice (%s): %s", self.interface, res.stderr.strip()
+            )
 
-    def apply_profile(self, profile: NetworkProfile) -> bool:
+    def apply_netem(self, netem_args: list[str]) -> None:
+        """
+        Attach configured netem qdisc rules to root egress.
+
+        Args:
+            netem_args (list[str]): Positional CLI arguments passed to netem.
+        """
         self.clear_rules()
-        if profile.delay_ms == 0 and profile.loss_pct == 0:
-            logger.info("Profile '%s': Ideal line rate applied.", profile.name)
-            return True
-
-        cmd = ["tc", "qdisc", "add", "dev", self.interface, "root", "netem"]
-        if profile.delay_ms > 0:
-            cmd.extend(["delay", f"{profile.delay_ms}ms"])
-            if profile.jitter_ms > 0:
-                cmd.extend([f"{profile.jitter_ms}ms", "distribution", "normal"])
-        if profile.loss_pct > 0:
-            cmd.extend(["loss", f"{profile.loss_pct}%"])
-            if profile.correlation_pct > 0:
-                cmd.append(f"{profile.correlation_pct}%")
-
-        logger.info("Executing: %s", " ".join(cmd))
+        cmd = [
+            "tc",
+            "qdisc",
+            "add",
+            "dev",
+            self.interface,
+            "root",
+            "netem",
+        ] + netem_args
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
-            logger.error("Failed to apply tc rule: %s", res.stderr.strip())
-            return False
-        return True
+            logger.error(
+                "Failed executing tc rule '%s': %s", " ".join(cmd), res.stderr.strip()
+            )
+            raise RuntimeError(f"tc execution failed: {res.stderr.strip()}")
+        logger.info("Kernel netem applied: %s", " ".join(netem_args))
 
 
 class SweepOrchestrator:
-    def __init__(self, c2_url: str, influx_url: str, token: str, org: str, bucket: str, net_iface: str):
+    """Coordinates empirical impairment sweeps across C2, netem, and InfluxDB."""
+
+    def __init__(
+        self,
+        interface: str,
+        c2_url: str = "http://127.0.0.1:5050",
+        influx_url: str = os.getenv("INFLUXDB_URL", "http://127.0.0.1:8086"),
+        influx_token: str = os.getenv("INFLUXDB_TOKEN", "testbed_secret_token_123"),
+        influx_org: str = os.getenv("INFLUXDB_ORG", "resilient_pid"),
+        influx_bucket: str = os.getenv("INFLUXDB_BUCKET", "wireless_pid_metrics"),
+        data_export_dir: str = "/data_exports",
+    ):
+        """
+        Initialize orchestrator clients, endpoints, and storage targets.
+
+        Args:
+            interface (str): Network device interface for traffic shaping.
+            c2_url (str): Supervisory C2 HTTP REST endpoint base URL.
+            influx_url (str): InfluxDB v2 server address.
+            influx_token (str): InfluxDB organization authentication token.
+            influx_org (str): InfluxDB destination organization namespace.
+            influx_bucket (str): InfluxDB telemetry bucket name.
+            data_export_dir (str): Filesystem directory for persisting CSV snapshots.
+        """
+        self.tc = TrafficController(interface)
         self.c2_url = c2_url.rstrip("/")
-        self.influx_client = InfluxDBClient(url=influx_url, token=token, org=org)
-        self.query_api = self.influx_client.query_api()
-        self.org = org
-        self.bucket = bucket
-        self.netem = NetworkEmulationController(interface=net_iface)
+        self.influx_url = influx_url
+        self.influx_token = influx_token
+        self.influx_org = influx_org
+        self.influx_bucket = influx_bucket
+        self.data_export_dir = data_export_dir
 
-    def set_c2_state(self, payload: Dict[str, Any]) -> bool:
+        # Ensure persistence destination directory exists
+        os.makedirs(self.data_export_dir, exist_ok=True)
+        self.influx_client = InfluxDBClient(
+            url=self.influx_url,
+            token=self.influx_token,
+            org=self.influx_org,
+            timeout=30_000,
+        )
+
+    def set_c2_state(self, algorithm: str, setpoint: float, trial_id: str) -> bool:
+        """
+        Dispatch active control law and setpoint target to C2 REST API.
+
+        Args:
+            algorithm (str): Active control algorithm identifier.
+            setpoint (float): Reference trajectory setpoint.
+            trial_id (str): Unique trial execution tag.
+
+        Returns:
+            bool: True if REST transaction succeeded with HTTP 200.
+        """
+        endpoint = f"{self.c2_url}/api/control"
+        payload = {
+            "algorithm": algorithm,
+            "setpoint": float(setpoint),
+            "trial_id": trial_id,
+        }
         try:
-            res = requests.post(f"{self.c2_url}/api/control", json=payload, timeout=2.0)
-            return res.status_code == 200
+            resp = requests.post(endpoint, json=payload, timeout=3.0)
+            return resp.status_code == 200
         except requests.RequestException as e:
-            logger.error("C2 communication failure: %s", e)
+            logger.error("C2 POST /api/control request failed: %s", e)
             return False
 
-    def stop_c2(self) -> bool:
+    def stop_c2_actuation(self) -> None:
+        """Issue halt signal to C2 REST API to disengage plant actuation."""
+        endpoint = f"{self.c2_url}/api/stop"
         try:
-            res = requests.post(f"{self.c2_url}/api/stop", timeout=2.0)
-            return res.status_code == 200
+            requests.post(endpoint, timeout=3.0)
+            logger.info("C2 actuation safely de-energized.")
         except requests.RequestException:
-            return False
+            pass
 
-    def fetch_trial_metrics(self, trial_id: str) -> Optional[Dict[str, float]]:
-        """Queries InfluxDB v2 via Flux and computes statistical control indices."""
-        flux = f'''
-        from(bucket: "{self.bucket}")
-          |> range(start: -1h)
+    def export_trial_csv(self, trial_id: str, filename: str) -> None:
+        """
+        Extract synchronized trial time-series from InfluxDB and save as CSV.
+
+        Args:
+            trial_id (str): Experiment trial identifier tag to isolate.
+            filename (str): Name of destination CSV file in data_export_dir.
+        """
+        query_api = self.influx_client.query_api()
+        flux_query = f"""
+        from(bucket: "{self.influx_bucket}")
+          |> range(start: -30m)
           |> filter(fn: (r) => r["_measurement"] == "control_telemetry")
           |> filter(fn: (r) => r["trial_id"] == "{trial_id}")
           |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
-        '''
+          |> keep(columns: ["_time", "trial_id", "algorithm", "setpoint",
+                           "process_variable", "control_signal", "error",
+                           "rtt_ms", "is_loss"])
+          |> sort(columns: ["_time"])
+        """
+        df = query_api.query_data_frame(flux_query)
+        if isinstance(df, list):
+            df = pd.concat(df, ignore_index=True) if df else pd.DataFrame()
+
+        target_path = os.path.join(self.data_export_dir, filename)
+        if not df.empty:
+            df.to_csv(target_path, index=False)
+            logger.info("Exported %d records to %s", len(df), target_path)
+        else:
+            logger.warning(
+                "Empty result set for trial '%s'; skipping CSV export.", trial_id
+            )
+
+    def run_trial(
+        self,
+        trial_id: str,
+        algorithm: str,
+        setpoint: float,
+        netem_args: list[str],
+        duration_sec: float,
+        export_filename: str,
+    ) -> None:
+        """
+        Execute an isolated step response trial under target network conditions.
+
+        Args:
+            trial_id (str): Unique trial execution tag.
+            algorithm (str): Active control law.
+            setpoint (float): Target reference setpoint.
+            netem_args (list[str]): Traffic shaping rules for the interface.
+            duration_sec (float): Active runtime observation window.
+            export_filename (str): Output CSV filename for dataset extraction.
+        """
+        logger.info("--- Launching Trial: %s (%s) ---", trial_id, algorithm)
         try:
-            df = self.query_api.query_data_frame(flux, org=self.org)
-            if isinstance(df, list):
-                df = pd.concat(df, ignore_index=True)
-            if df.empty or "error" not in df.columns:
-                logger.warning("No data points ingested for trial: %s", trial_id)
-                return None
+            # Apply kernel traffic shaping rules
+            self.tc.apply_netem(netem_args)
 
-            # Calculate control performance figures of merit
-            errors = df["error"].to_numpy(dtype=float)
-            rtts = df["rtt_ms"].dropna().to_numpy(dtype=float) if "rtt_ms" in df.columns else np.array([])
-            drops = df["packet_loss"].to_numpy(dtype=float) if "packet_loss" in df.columns else np.zeros(len(errors))
+            # Update C2 runtime state
+            if not self.set_c2_state(algorithm, setpoint, trial_id):
+                raise RuntimeError("C2 rejected control configuration.")
 
-            rmse = float(np.sqrt(np.mean(errors ** 2)))
-            iae = float(np.sum(np.abs(errors)))
-            mean_rtt = float(np.mean(rtts)) if len(rtts) > 0 else 0.0
-            drop_rate = float(np.sum(drops) / len(drops)) if len(drops) > 0 else 0.0
+            # Monitor loop duration window
+            time.sleep(duration_sec)
 
-            return {
-                "sample_count": len(errors),
-                "rmse": rmse,
-                "iae": iae,
-                "mean_rtt_ms": mean_rtt,
-                "drop_rate": drop_rate
-            }
-        except Exception as e:
-            logger.error("Failed to query InfluxDB for trial %s: %s", trial_id, e)
-            return None
+        finally:
+            # Ensure physical plant is halted and kernel network rules are reset
+            self.stop_c2_actuation()
+            self.tc.clear_rules()
 
-    def execute_sweep(self, algorithms: List[str], profiles: List[NetworkProfile], 
-                      setpoint: float, duration_s: float, output_csv: str) -> None:
-        results = []
-        os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
+        # Allow InfluxDB asynchronous worker buffers to flush before querying
+        time.sleep(1.5)
+        self.export_trial_csv(trial_id, export_filename)
 
-        total_trials = len(algorithms) * len(profiles)
-        trial_idx = 1
+    def execute_matrix(self) -> None:
+        """Execute automated benchmark sweeps across all experimental vectors."""
+        # Vector 1: Pure dead-time phase margin erosion sweeps (10ms to 100ms RTT)
+        for rtt_ms in range(10, 110, 10):
+            one_way_delay = f"{rtt_ms // 2}ms"
+            for algo in ["baseline", "smith"]:
+                t_id = f"sweep_deadtime_{algo}_{rtt_ms}ms_rtt"
+                fname = (
+                    f"control_law_comparison_{rtt_ms}ms_rtt.csv"
+                    if algo == "smith"
+                    else f"baseline_{rtt_ms}ms_rtt.csv"
+                )
+                self.run_trial(
+                    trial_id=t_id,
+                    algorithm=algo,
+                    setpoint=50.0,
+                    netem_args=["delay", one_way_delay],
+                    duration_sec=20.0,
+                    export_filename=fname,
+                )
 
-        logger.info("Initializing sweep: %d configurations | %.1fs per trial", total_trials, duration_s)
+        # Vector 2: Stochastic delay jitter distributions (Gaussian vs. Pareto)
+        jitter_profiles = [
+            ("gaussian", ["delay", "40ms", "15ms", "distribution", "normal"]),
+            ("pareto", ["delay", "40ms", "15ms", "distribution", "pareto"]),
+        ]
+        for name, args in jitter_profiles:
+            for algo in ["baseline", "smith", "resilient"]:
+                t_id = f"sweep_jitter_{name}_{algo}"
+                fname = f"trial_jitter_{name}_{algo}.csv"
+                self.run_trial(
+                    trial_id=t_id,
+                    algorithm=algo,
+                    setpoint=50.0,
+                    netem_args=args,
+                    duration_sec=25.0,
+                    export_filename=fname,
+                )
 
-        for profile in profiles:
-            logger.info(">>> Applying Network Condition: %s <<<", profile.name)
-            if not self.netem.apply_profile(profile):
-                logger.warning("Skipping profile %s due to netlink error", profile.name)
-                continue
-
-            for algo in algorithms:
-                trial_id = f"sweep_{algo}_{profile.name}_{int(time.time())}"
-                logger.info("[%d/%d] Starting Trial: %s (Algorithm: %s)", trial_idx, total_trials, trial_id, algo)
-
-                # Configure and engage loop
-                state_payload = {
-                    "is_running": True,
-                    "algorithm": algo,
-                    "setpoint": setpoint,
-                    "trial_id": trial_id,
-                    "active_profile": profile.name
-                }
-                if not self.set_c2_state(state_payload):
-                    logger.error("Failed to start trial %s. Halting sequence.", trial_id)
-                    continue
-
-                # Run duration window
-                time.sleep(duration_s)
-
-                # Halt actuation
-                self.stop_c2()
-                time.sleep(1.0)  # Drain remaining telemetry buffer
-
-                # Extract and aggregate
-                metrics = self.fetch_trial_metrics(trial_id)
-                record = {
-                    "trial_id": trial_id,
-                    "algorithm": algo,
-                    "profile_name": profile.name,
-                    "delay_ms": profile.delay_ms,
-                    "jitter_ms": profile.jitter_ms,
-                    "loss_pct": profile.loss_pct,
-                    "setpoint": setpoint,
-                    "duration_s": duration_s,
-                }
-                if metrics:
-                    record.update(metrics)
-                    logger.info("Trial %s Result: RMSE=%.3f | IAE=%.2f | Mean RTT=%.2fms | Drops=%.2f%%",
-                                trial_id, metrics["rmse"], metrics["iae"], metrics["mean_rtt_ms"], metrics["drop_rate"] * 100)
-                else:
-                    record.update({"sample_count": 0, "rmse": np.nan, "iae": np.nan, "mean_rtt_ms": np.nan, "drop_rate": np.nan})
-
-                results.append(record)
-                trial_idx += 1
-
-                # Write incremental checkpoint to prevent data loss
-                pd.DataFrame(results).to_csv(output_csv, index=False)
-
-        # Cleanup interface
-        self.netem.clear_rules()
-        logger.info("Parameter sweep successfully finished. Summary persisted to %s", output_csv)
+        # Vector 3: Correlated burst dropouts (p_loss in [2%, 20%], correlation=25%)
+        for loss_pct in [2, 5, 10, 15, 20]:
+            for algo in ["baseline", "resilient"]:
+                t_id = f"sweep_burst_loss_{loss_pct}pct_{algo}"
+                fname = f"burst_loss_{loss_pct}pct_{algo}.csv"
+                self.run_trial(
+                    trial_id=t_id,
+                    algorithm=algo,
+                    setpoint=50.0,
+                    netem_args=["loss", f"{loss_pct}%", "25%"],
+                    duration_sec=25.0,
+                    export_filename=fname,
+                )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Automated DCS Stress-Test and Parameter Sweep Harness")
-    parser.add_argument("--interface", default=os.getenv("DCS_IFACE", "wlan0"),
-                        help="Network interface to attach tc netem rules")
-    parser.add_argument("--duration", type=float, default=20.0, help="Duration of each step response trial in seconds")
-    parser.add_argument("--setpoint", type=float, default=70.0, help="Target process variable setpoint")
-    parser.add_argument("--output", default="data/sweeps/benchmark_results.csv", help="Destination CSV path")
-    parser.add_argument("--c2-url", default="http://127.0.0.1:5050", help="C2 REST API Base URL")
-    args = parser.parse_args()
+def parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for sweep automation.
 
-    # Define matrix of experimental test vectors
-    algorithms = ["baseline", "smith", "resilient"]
-    profiles = [
-        NetworkProfile(name="nominal", delay_ms=0.0, jitter_ms=0.0, loss_pct=0.0),
-        NetworkProfile(name="low_jitter", delay_ms=20.0, jitter_ms=5.0, loss_pct=0.0),
-        NetworkProfile(name="moderate_jitter", delay_ms=50.0, jitter_ms=15.0, loss_pct=1.0),
-        NetworkProfile(name="high_jitter_loss", delay_ms=80.0, jitter_ms=30.0, loss_pct=5.0),
-    ]
-
-    orchestrator = SweepOrchestrator(
-        c2_url=args.c2_url,
-        influx_url=os.getenv("INFLUXDB_URL", "http://127.0.0.1:8086"),
-        token=os.getenv("INFLUXDB_TOKEN", "testbed_secret_token_123"),
-        org=os.getenv("INFLUXDB_ORG", "resilient_pid"),
-        bucket=os.getenv("INFLUXDB_BUCKET", "wireless_pid_metrics"),
-        net_iface=args.interface
+    Returns:
+        argparse.Namespace: Parsed CLI configuration flags.
+    """
+    parser = argparse.ArgumentParser(
+        description="Automated Network Impairment Parameter Sweep Orchestrator"
     )
+    parser.add_argument(
+        "--interface",
+        type=str,
+        default=os.getenv("DCS_IFACE", "wlan0"),
+        help="Target egress network interface for tc/netem injection",
+    )
+    parser.add_argument(
+        "--c2-url",
+        type=str,
+        default="http://127.0.0.1:5050",
+        help="Supervisory C2 REST API endpoint",
+    )
+    return parser.parse_args()
 
+
+def main() -> None:
+    """Initialize orchestrator dependencies and run parameter sweep matrix."""
+    args = parse_args()
+    orchestrator = SweepOrchestrator(interface=args.interface, c2_url=args.c2_url)
+
+    logger.info("Starting automated parameter sweeps on interface %s", args.interface)
     try:
-        orchestrator.execute_sweep(
-            algorithms=algorithms,
-            profiles=profiles,
-            setpoint=args.setpoint,
-            duration_s=args.duration,
-            output_csv=args.output
-        )
+        orchestrator.execute_matrix()
     except KeyboardInterrupt:
-        logger.warning("Sweep terminated early by operator. Resetting qdisc.")
-        orchestrator.netem.clear_rules()
-        orchestrator.stop_c2()
+        logger.warning("Interrupted by operator; cleaning up qdisc rules...")
+        orchestrator.tc.clear_rules()
+        orchestrator.stop_c2_actuation()
+    logger.info("Sweep execution completed.")
 
 
 if __name__ == "__main__":
