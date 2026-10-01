@@ -16,3 +16,6 @@ venv/
 
 # Dev environment artifacts
 .DS_Store
+
+# Project exports
+data_exports/
