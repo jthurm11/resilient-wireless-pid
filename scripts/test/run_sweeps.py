@@ -112,18 +112,12 @@ class SweepOrchestrator:
 
     def set_c2_state(self, algorithm: str, setpoint: float, trial_id: str) -> bool:
         """
-        Dispatch active control law and setpoint target to C2 REST API.
-
-        Args:
-            algorithm (str): Active control algorithm identifier.
-            setpoint (float): Reference trajectory setpoint.
-            trial_id (str): Unique trial execution tag.
-
-        Returns:
-            bool: True if REST transaction succeeded with HTTP 200.
+        Dispatch active control law, setpoint, and trial ID to C2 REST API.
+        Explicitly asserts is_running to wake the loop from stopped holding state.
         """
         endpoint = f"{self.c2_url}/api/control"
         payload = {
+            "is_running": True,
             "algorithm": algorithm,
             "setpoint": float(setpoint),
             "trial_id": trial_id,
@@ -159,23 +153,29 @@ class SweepOrchestrator:
           |> filter(fn: (r) => r["_measurement"] == "control_telemetry")
           |> filter(fn: (r) => r["trial_id"] == "{trial_id}")
           |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
-          |> keep(columns: ["_time", "trial_id", "algorithm", "setpoint",
-                           "process_variable", "control_signal", "error",
-                           "rtt_ms", "is_loss"])
           |> sort(columns: ["_time"])
         """
-        df = query_api.query_data_frame(flux_query)
-        if isinstance(df, list):
-            df = pd.concat(df, ignore_index=True) if df else pd.DataFrame()
+        try:
+            df = query_api.query_data_frame(flux_query)
+            if isinstance(df, list):
+                df = pd.concat(df, ignore_index=True) if df else pd.DataFrame()
 
-        target_path = os.path.join(self.data_export_dir, filename)
-        if not df.empty:
-            df.to_csv(target_path, index=False)
-            logger.info("Exported %d records to %s", len(df), target_path)
-        else:
-            logger.warning(
-                "Empty result set for trial '%s'; skipping CSV export.", trial_id
-            )
+            target_path = os.path.join(self.data_export_dir, filename)
+            if not df.empty:
+                # Retain desired telemetry columns if present in pivoted fields
+                preferred_cols = [
+                    "_time", "trial_id", "algorithm", "setpoint", 
+                    "process_variable", "control_signal", "error", 
+                    "rtt_ms", "is_loss"
+                ]
+                existing_cols = [c for c in preferred_cols if c in df.columns]
+                export_df = df[existing_cols] if existing_cols else df
+                export_df.to_csv(target_path, index=False)
+                logger.info("Exported %d records to %s", len(export_df), target_path)
+            else:
+                logger.warning("Empty result set for trial '%s'; skipping CSV export.", trial_id)
+        except Exception as err:
+            logger.error("Flux query failure for trial '%s': %s", trial_id, err)
 
     def run_trial(
         self,
