@@ -152,17 +152,24 @@ configure_secondary_network() {
 
   msg_info "Configuring secondary alias ${target_ip}/${DCS_SUBNET_MASK} on ${iface}"
   
-  # Flush existing assignment
   ip addr del "${target_ip}/${DCS_SUBNET_MASK}" dev "$iface" 2>/dev/null || true
   ip addr add "${target_ip}/${DCS_SUBNET_MASK}" dev "$iface" label "${iface}:dcs"
-  
-  # Persist across network reloads
-  cat <<EOF > /etc/network/interfaces.d/dcs-alias
+
+  if command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager; then
+    local conn_name
+    conn_name="$(nmcli -t -f NAME,DEVICE connection show --active | grep ":${iface}$" | cut -d: -f1 | head -n 1 || true)"
+    if [ -n "$conn_name" ]; then
+      nmcli connection modify "$conn_name" +ipv4.addresses "${target_ip}/${DCS_SUBNET_MASK}" 2>/dev/null || true
+    fi
+  elif [ -d "/etc/network" ]; then
+    mkdir -p /etc/network/interfaces.d
+    cat <<EOF > /etc/network/interfaces.d/dcs-alias
 auto ${iface}:dcs
 iface ${iface}:dcs inet static
     address ${target_ip}
     netmask 255.255.255.0
 EOF
+  fi
 
   msg_ok "DCS control alias bound to ${iface}:dcs (${target_ip})"
 }
@@ -175,7 +182,18 @@ remove_secondary_network() {
   msg_info "Flushing DCS subnet aliases from ${iface}"
   ip addr del "${CTRL_IP}/${DCS_SUBNET_MASK}" dev "$iface" 2>/dev/null || true
   ip addr del "${PLANT_IP}/${DCS_SUBNET_MASK}" dev "$iface" 2>/dev/null || true
+
+  if command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager; then
+    local conn_name
+    conn_name="$(nmcli -t -f NAME,DEVICE connection show --active | grep ":${iface}$" | cut -d: -f1 | head -n 1 || true)"
+    if [ -n "$conn_name" ]; then
+      nmcli connection modify "$conn_name" -ipv4.addresses "${CTRL_IP}/${DCS_SUBNET_MASK}" 2>/dev/null || true
+      nmcli connection modify "$conn_name" -ipv4.addresses "${PLANT_IP}/${DCS_SUBNET_MASK}" 2>/dev/null || true
+    fi
+  fi
+
   rm -f /etc/network/interfaces.d/dcs-alias
+  
   msg_ok "Subnet aliases removed"
 }
 
