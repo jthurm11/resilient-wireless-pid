@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# scripts/infra/rpi_deploy.sh
+# scripts/infra/hardware_manager.sh
 # Provisions, inspects, and decommissions physical Raspberry Pi nodes for the resilient DCS testbed.
 # Configures secondary network aliases, systemd daemons, and GPIO status monitors.
 
 set -Eeuo pipefail
 
 # ANSI color formatting
-YW=$(echo "\033[33m")
-BL=$(echo "\033[36m")
-RD=$(echo "\033[01;31m")
-GN=$(echo "\033[1;92m")
-CL=$(echo "\033[m")
-BOLD=$(echo "\033[1m")
+YW="\033[33m"
+BL="\033[36m"
+RD="\033[01;31m"
+GN="\033[1;92m"
+CL="\033[m"
+BOLD="\033[1m"
 TAB="  "
 
 # Network and storage paths
@@ -44,7 +44,7 @@ EOF
 }
 
 print_usage() {
-  """Renders CLI usage and option descriptions to stdout."""
+  # Renders CLI usage and option descriptions to stdout.
   cat <<EOF
 Usage: $0 [ctrl|plant] {create|destroy|status} [options]
 
@@ -75,12 +75,8 @@ msg_warn()  { echo -e "\r\033[K${TAB}${YW}[WARN]${CL} $1"; }
 msg_error() { echo -e "\r\033[K${TAB}${RD}[ERROR]${CL} $1"; exit 1; }
 
 parse_cli_arguments() {
-  """
-  Parses CLI positional arguments, flags, and infers active node role.
-
-  Args:
-      $@: Raw command line parameters.
-  """
+  # Parses CLI positional arguments, flags, and infers active node role.
+  # Args: $@ (raw command line parameters)
   for arg in "$@"; do
     case "$arg" in
       -h|--help)
@@ -124,7 +120,7 @@ parse_cli_arguments() {
 }
 
 check_execution_environment() {
-  """Verifies superuser execution rights and processor architecture."""
+  # Verifies superuser execution rights and processor architecture.
   if [ "$(id -u)" -ne 0 ]; then
     msg_error "Requires root privileges. Re-run using 'sudo $0'."
   fi
@@ -137,24 +133,16 @@ check_execution_environment() {
 }
 
 find_wifi_interface() {
-  """
-  Identifies primary operational wireless network interface name.
-
-  Returns:
-      String: Wireless interface name.
-  """
+  # Identifies primary operational wireless network interface name.
+  # Returns: interface string
   local iface
   iface="$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^wlan|^wl' | head -n 1 || true)"
   echo "${iface:-wlan0}"
 }
 
 configure_secondary_network() {
-  """
-  Applies secondary static IPv4 address alias to wireless interface.
-
-  Args:
-      role (str): Node execution role ('ctrl' or 'plant').
-  """
+  # Applies secondary static IPv4 address alias to wireless interface.
+  # Args: $1 (role: 'ctrl' or 'plant')
   local role="$1"
   local iface
   iface="$(find_wifi_interface)"
@@ -180,7 +168,7 @@ EOF
 }
 
 remove_secondary_network() {
-  """Removes persistent interface configurations and flushes aliases."""
+  # Removes persistent interface configurations and flushes aliases.
   local iface
   iface="$(find_wifi_interface)"
   
@@ -192,12 +180,8 @@ remove_secondary_network() {
 }
 
 configure_hostname() {
-  """
-  Updates kernel hostname and aligns local loopback host mappings.
-
-  Args:
-      target_hostname (str): Target system network name.
-  """
+  # Updates kernel hostname and aligns local loopback host mappings.
+  # Args: $1 (target hostname)
   local target_hostname="$1"
   msg_info "Setting system hostname to '${target_hostname}'"
   hostnamectl set-hostname "$target_hostname"
@@ -210,7 +194,6 @@ configure_hostname() {
 }
 
 restore_hostname() {
-  """Reverts system hostname back to factory default."""
   msg_info "Resetting hostname to '${FALLBACK_HOSTNAME}'"
   hostnamectl set-hostname "$FALLBACK_HOSTNAME"
   sed -i "s/127\.0\.1\.1.*/127.0.1.1\t${FALLBACK_HOSTNAME}/g" /etc/hosts
@@ -218,9 +201,7 @@ restore_hostname() {
 }
 
 enable_hardware_buses() {
-  """Loads peripheral hardware kernel modules and device tree overlays."""
   msg_info "Enabling kernel peripheral bus overlays"
-
   local config_txt="/boot/firmware/config.txt"
   [ ! -f "$config_txt" ] && config_txt="/boot/config.txt"
 
@@ -229,7 +210,7 @@ enable_hardware_buses() {
       echo "dtparam=i2c_arm=on" >> "$config_txt"
     fi
   fi
-
+  
   if command -v dtparam >/dev/null 2>&1; then
     dtparam i2c_arm=on 2>/dev/null || true
   elif command -v dtoverlay >/dev/null 2>&1; then
@@ -242,24 +223,19 @@ enable_hardware_buses() {
   if [ ! -e "/dev/i2c-1" ]; then
     msg_warn "/dev/i2c-1 not yet active. A reboot may be required if runtime dtparam failed."
   else
-    msg_ok "I2C (/dev/i2c-1) and netem modules active"
+    msg_ok "I2C (/dev/i2c-1) and netem modules enabled"
   fi
 }
 
 deploy_led_monitor() {
-  """
-  Deploys gpiozero-backed diagnostic state daemon as a systemd service.
-
-  Args:
-      role (str): Node execution role ('ctrl' or 'plant').
-  """
+  # Deploys gpiozero-backed diagnostic state daemon as a systemd service.
+  # Args: $1 (role: 'ctrl' or 'plant')
   local role="$1"
   local peer_ip=""
   [ "$role" == "ctrl" ] && peer_ip="$PLANT_IP" || peer_ip="$CTRL_IP"
 
   msg_info "Deploying hardware diagnostic LED monitor daemon"
   
-  # Deploy monitor daemon using gpiozero for clean backend abstraction
   cat <<EOF > /usr/local/bin/dcs-led-monitor.py
 #!/usr/bin/env python3
 """
@@ -279,22 +255,12 @@ led_green = LED(PIN_GREEN)
 led_red = LED(PIN_RED)
 
 def check_link() -> bool:
-    """
-    Checks bidirectional peer reachability over the DCS network.
-
-    Returns:
-        bool: True if remote host answers ICMP echo, False otherwise.
-    """
+    """Checks bidirectional peer reachability over the DCS network."""
     cmd = ["ping", "-c", "1", "-W", "1", PEER_IP]
     return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 def check_daemon() -> bool:
-    """
-    Queries systemd unit status for the local DCS runtime service.
-
-    Returns:
-        bool: True if systemd reports unit active, False otherwise.
-    """
+    """Queries systemd unit status for the local DCS runtime service."""
     unit = "dcs-controller.service" if ROLE == "ctrl" else "dcs-plant.service"
     return subprocess.run(["systemctl", "is-active", "--quiet", unit]).returncode == 0
 
@@ -304,17 +270,14 @@ try:
         link_ok = check_link()
 
         if daemon_ok and link_ok:
-            # Nominal state: green active, red cleared
             led_green.on()
             led_red.off()
             time.sleep(1.0)
         elif daemon_ok and not link_ok:
-            # Degraded state: link loss warning
             led_green.off()
             led_red.on()
             time.sleep(0.5)
         else:
-            # Fault state: daemon failure blink
             led_green.off()
             led_red.toggle()
             time.sleep(0.2)
@@ -350,7 +313,7 @@ EOF
 }
 
 provision_workspace() {
-  """Installs system packages, prepares venv, and compiles repo in editable mode."""
+  # Installs system packages, prepares venv, and compiles repo in editable mode.
   msg_info "Configuring repository virtual environment and dependencies"
   apt-get update -y >/dev/null 2>&1
   apt-get install -y --no-install-recommends \
@@ -366,12 +329,8 @@ provision_workspace() {
 }
 
 deploy_node_service() {
-  """
-  Deploys and initializes real-time systemd service units for node role.
-
-  Args:
-      role (str): Node execution role ('ctrl' or 'plant').
-  """
+  # Deploys and initializes real-time systemd service units for node role.
+  # Args: $1 (role: 'ctrl' or 'plant')
   local role="$1"
   local unit_name=""
   
@@ -429,7 +388,7 @@ EOF
 }
 
 action_create() {
-  """Executes end-to-end bare-metal provisioning workflow."""
+  # Executes end-to-end bare-metal provisioning workflow.
   local role="$TARGET_ROLE"
   local target_hostname="dcs-${role}-node"
 
@@ -452,7 +411,7 @@ action_create() {
 }
 
 action_destroy() {
-  """Decommissions DCS services, restores default hostname, and purges aliases."""
+  # Decommissions DCS services, restores default hostname, and purges aliases.
   echo -e "${BOLD}Decommissioning Node and Purging DCS Configurations...${CL}"
   
   for unit in dcs-controller.service dcs-plant.service dcs-led-monitor.service; do
@@ -489,7 +448,7 @@ except Exception:
 }
 
 action_status() {
-  """Interrogates and displays node runtime parameters and peripheral health."""
+  # Interrogates and displays node runtime parameters and peripheral health.
   local role="${TARGET_ROLE:-unknown}"
   local iface
   iface="$(find_wifi_interface)"
