@@ -33,7 +33,7 @@ EOF
 }
 
 print_usage() {
-  """Renders CLI usage and option descriptions to stdout."""
+  # Renders CLI usage and option descriptions to stdout.
   cat <<EOF
 Usage: $0 {create|destroy|status} [options]
 
@@ -53,12 +53,8 @@ msg_ok()    { echo -e "\r\033[K${TAB}${GN}[OK]${CL} $1"; }
 msg_error() { echo -e "\r\033[K${TAB}${RD}[ERROR]${CL} $1"; exit 1; }
 
 parse_cli_arguments() {
-  """
-  Parses command line arguments and options.
-
-  Args:
-      $@: Raw CLI parameters.
-  """
+  # Parses command line arguments and options.
+  # Args: $@ (raw CLI parameters)
   for arg in "$@"; do
     case "$arg" in
       -h|--help)
@@ -86,13 +82,13 @@ parse_cli_arguments() {
 }
 
 check_docker() {
-  """Validates Docker Engine and Compose v2 plugin availability."""
+  # Validates Docker Engine and Compose v2 plugin availability.
   command -v docker >/dev/null 2>&1 || msg_error "Docker is not installed."
   docker compose version >/dev/null 2>&1 || msg_error "Docker Compose v2 plugin is required."
 }
 
 create_stack() {
-  """Instantiates InfluxDB v2 and Grafana containers in detached mode."""
+  # Instantiates InfluxDB v2 and Grafana containers in detached mode.
   check_docker
   echo -e "${BOLD}Provisioning Telemetry Services via Compose...${CL}"
   msg_info "Starting InfluxDB v2 and Grafana containers"
@@ -105,7 +101,7 @@ create_stack() {
 }
 
 destroy_stack() {
-  """Terminates containers, deletes telemetry network, and purges volumes."""
+  # Terminates containers, deletes telemetry network, and purges volumes.
   check_docker
   echo -e "${BOLD}Tearing down Telemetry Services...${CL}"
   msg_info "Stopping containers and pruning network"
@@ -114,7 +110,7 @@ destroy_stack() {
 }
 
 status_stack() {
-  """Queries process status for telemetry compose services."""
+  # Queries process status for telemetry compose services.
   check_docker
   echo -e "${BOLD}Current Telemetry Service Status:${CL}\n"
   docker compose -f "$COMPOSE_FILE" ps

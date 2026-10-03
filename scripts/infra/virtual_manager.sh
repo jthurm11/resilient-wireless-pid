@@ -13,7 +13,8 @@ CL="\033[m"
 BOLD="\033[1m"
 TAB="  "
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd || echo "")"
+TARGET_DIR="/opt/resilient-wireless-pid"
 COMPOSE_FILE="${REPO_ROOT}/deploy/docker/docker-compose.yml"
 
 SHOW_HEADER=true
@@ -34,7 +35,7 @@ EOF
 }
 
 print_usage() {
-  """Renders CLI usage and option descriptions to stdout."""
+  # Renders CLI usage and option descriptions to stdout.
   cat <<EOF
 Usage: $0 [docker|lxc] {create|destroy|status} [options]
 
@@ -57,12 +58,8 @@ msg_ok()    { echo -e "\r\033[K${TAB}${GN}[OK]${CL} $1"; }
 msg_error() { echo -e "\r\033[K${TAB}${RD}[ERROR]${CL} $1"; exit 1; }
 
 parse_cli_arguments() {
-  """
-  Parses command line arguments and options.
-
-  Args:
-      $@: Raw CLI parameters.
-  """
+  # Parses command line arguments and options.
+  # Args: $@ (raw CLI parameters)
   for arg in "$@"; do
     case "$arg" in
       -h|--help)
@@ -92,8 +89,21 @@ parse_cli_arguments() {
   fi
 }
 
+resolve_repository_workspace() {
+  # Ensures docker-compose.yml and manifests are available on host.
+  if [ ! -f "${REPO_ROOT}/deploy/docker/docker-compose.yml" ]; then
+    msg_info "Workspace missing locally. Cloning repository into ${TARGET_DIR}"
+    if [ ! -d "$TARGET_DIR" ]; then
+      git clone https://github.com/jthurm11/resilient-wireless-pid.git "$TARGET_DIR" >/dev/null 2>&1
+    fi
+    REPO_ROOT="$TARGET_DIR"
+    COMPOSE_FILE="${REPO_ROOT}/deploy/docker/docker-compose.yml"
+    msg_ok "Repository ready at ${REPO_ROOT}"
+  fi
+}
+
 auto_detect_target() {
-  """Detects available hypervisor or container subsystems to assign TARGET backend."""
+  # Detects available hypervisor or container subsystems to assign TARGET backend.
   local has_pve=false
   local has_docker=false
 
@@ -138,7 +148,7 @@ auto_detect_target() {
 }
 
 create_docker() {
-  """Deploys Docker Compose multi-container pods and network topology."""
+  # Deploys Docker Compose multi-container pods and network topology.
   echo -e "${BOLD}Provisioning Docker Mock Pods & Network Topology...${CL}"
   msg_info "Building container images and initializing dcs_net bridge"
   docker compose -f "$COMPOSE_FILE" up -d --build >/dev/null 2>&1
@@ -150,7 +160,7 @@ create_docker() {
 }
 
 destroy_docker() {
-  """Stops and purges Docker Compose containers, bridges, and volumes."""
+  # Stops and purges Docker Compose containers, bridges, and volumes.
   echo -e "${BOLD}Tearing down Docker Mock Stack...${CL}"
   msg_info "Stopping containers and deleting virtual interfaces"
   docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1
@@ -158,13 +168,13 @@ destroy_docker() {
 }
 
 status_docker() {
-  """Queries process status of running Docker Compose services."""
+  # Queries process status of running Docker Compose services.
   echo -e "${BOLD}Docker Infrastructure Status:${CL}\n"
   docker compose -f "$COMPOSE_FILE" ps
 }
 
 pve_check_storage() {
-  """Selects available Proxmox storage pool for container volume provisioning."""
+  # Selects available Proxmox storage pool for container volume provisioning.
   STORAGE="local-lvm"
   if ! pvesm status -storage "$STORAGE" &>/dev/null; then
     STORAGE="local"
@@ -172,7 +182,7 @@ pve_check_storage() {
 }
 
 pve_configure_kernel() {
-  """Loads and persists Linux Traffic Control kernel queuing modules."""
+  # Loads and persists Linux Traffic Control kernel queuing modules.
   msg_info "Configuring host kernel modules for traffic control"
   local modules=("sch_netem" "cls_u32" "ifb" "sch_tbf" "sch_prio")
   for mod in "${modules[@]}"; do
@@ -185,7 +195,7 @@ pve_configure_kernel() {
 }
 
 pve_configure_network() {
-  """Configures isolated Linux bridge vmbr1 for inter-node control datagrams."""
+  # Configures isolated Linux bridge vmbr1 for inter-node control datagrams.
   msg_info "Verifying isolated DCS bridge (vmbr1)"
   if ! grep -q "iface vmbr1" /etc/network/interfaces; then
     cat <<EOF >> /etc/network/interfaces
@@ -208,7 +218,7 @@ EOF
 }
 
 pve_fetch_template() {
-  """Downloads latest Debian standard LXC appliance template if missing."""
+  # Downloads latest Debian standard LXC appliance template if missing.
   msg_info "Verifying Debian 13 template"
   pveam update >/dev/null 2>&1
   TEMPLATE=$(pveam available -section system | awk '{print $2}' | grep "debian-13-standard" | head -n 1 || true)
@@ -222,14 +232,8 @@ pve_fetch_template() {
 }
 
 pve_create_container() {
-  """
-  Instantiates and starts an unprivileged LXC container attached to vmbr0 and vmbr1.
-
-  Args:
-      ctid (int): Numerical LXC container identifier.
-      hostname (str): System hostname for the instance.
-      internal_ip (str): Static IP address assigned to DCS link interface.
-  """
+  # Instantiates and starts an unprivileged LXC container attached to vmbr0 and vmbr1.
+  # Args: $1 (ctid), $2 (hostname), $3 (internal_ip)
   local ctid="$1"
   local hostname="$2"
   local internal_ip="$3"
@@ -260,12 +264,8 @@ pve_create_container() {
 }
 
 pve_install_base_pkgs() {
-  """
-  Installs Python toolchains and network utilities inside target container.
-
-  Args:
-      ctid (int): Numerical LXC container identifier.
-  """
+  # Installs Python toolchains and network utilities inside target container.
+  # Args: $1 (ctid)
   local ctid="$1"
   msg_info "Installing POSIX utilities & Python on CT ${ctid}"
   sleep 2
@@ -278,12 +278,8 @@ pve_install_base_pkgs() {
 }
 
 pve_install_docker() {
-  """
-  Provisions official Docker CE repository and runtime inside container.
-
-  Args:
-      ctid (int): Numerical LXC container identifier.
-  """
+  # Provisions official Docker CE repository and runtime inside container.
+  # Args: $1 (ctid)
   local ctid="$1"
   msg_info "Configuring Docker Engine inside CT ${ctid}"
   pct exec "$ctid" -- bash -c "export DEBIAN_FRONTEND=noninteractive && \
@@ -299,7 +295,7 @@ pve_install_docker() {
 }
 
 pve_setup_systemd_services() {
-  """Configures systemd units and environment markers across LXC containers."""
+  # Configures systemd units and environment markers across LXC containers.
   msg_info "Deploying systemd service units to LXC containers"
 
   pct exec 202 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-plant.service
@@ -363,7 +359,7 @@ systemctl enable --now dcs-controller.service"
 }
 
 create_lxc() {
-  """Executes sequential deployment of Proxmox LXC containers and environments."""
+  # Executes sequential deployment of Proxmox LXC containers and environments.
   echo -e "${BOLD}Deploying Native Proxmox LXC Infrastructure...${CL}"
   pve_check_storage
   pve_configure_kernel
@@ -414,7 +410,7 @@ create_lxc() {
 }
 
 destroy_lxc() {
-  """Stops and purges CT 201 and CT 202 containers from Proxmox host."""
+  # Stops and purges CT 201 and CT 202 containers from Proxmox host.
   echo -e "${BOLD}Decommissioning Proxmox LXC Testbed...${CL}"
   for ctid in 201 202; do
     if pct status "$ctid" >/dev/null 2>&1; then
@@ -428,7 +424,7 @@ destroy_lxc() {
 }
 
 status_lxc() {
-  """Lists active mock containers registered on Proxmox host."""
+  # Lists active mock containers registered on Proxmox host.
   echo -e "${BOLD}Proxmox LXC Testbed Status:${CL}\n"
   pct list | grep -E "201|202" || echo "No active mock containers found."
 }

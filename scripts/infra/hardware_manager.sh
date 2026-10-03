@@ -15,7 +15,8 @@ BOLD="\033[1m"
 TAB="  "
 
 # Network and storage paths
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd || echo "")"
+TARGET_DIR="/opt/resilient-wireless-pid"
 STATE_FILE="/etc/dcs_node_role"
 FALLBACK_HOSTNAME="raspberrypi"
 DCS_SUBNET_MASK="24"
@@ -116,6 +117,22 @@ parse_cli_arguments() {
     elif [ "$ACTION" == "create" ]; then
       msg_error "Node role [ctrl|plant] required for initial creation. Run '$0 --help'."
     fi
+  fi
+}
+
+resolve_repository_workspace() {
+  # Ensures repository assets and manifests are available on disk.
+  if [ ! -f "${REPO_ROOT}/pyproject.toml" ]; then
+    msg_info "Manifests missing locally. Bootstrapping repository into ${TARGET_DIR}"
+    apt-get update -y >/dev/null 2>&1
+    apt-get install -y --no-install-recommends git >/dev/null 2>&1
+    if [ ! -d "$TARGET_DIR" ]; then
+      git clone https://github.com/jthurm11/resilient-wireless-pid.git "$TARGET_DIR" >/dev/null 2>&1
+    else
+      git -C "$TARGET_DIR" pull >/dev/null 2>&1 || true
+    fi
+    REPO_ROOT="$TARGET_DIR"
+    msg_ok "Repository synchronized at ${REPO_ROOT}"
   fi
 }
 
@@ -415,6 +432,7 @@ action_create() {
   enable_hardware_buses
   configure_hostname "$target_hostname"
   configure_secondary_network "$role"
+  resolve_repository_workspace
   provision_workspace
   deploy_led_monitor "$role"
   deploy_node_service "$role"
