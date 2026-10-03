@@ -5,7 +5,6 @@
 
 set -Eeuo pipefail
 
-# ANSI color formatting
 YW="\033[33m"
 BL="\033[36m"
 RD="\033[01;31m"
@@ -14,7 +13,6 @@ CL="\033[m"
 BOLD="\033[1m"
 TAB="  "
 
-# Network and storage paths
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd || echo "")"
 TARGET_DIR="/opt/resilient-wireless-pid"
 STATE_FILE="/etc/dcs_node_role"
@@ -23,7 +21,6 @@ DCS_SUBNET_MASK="24"
 CTRL_IP="10.10.10.1"
 PLANT_IP="10.10.10.2"
 
-# BCM pin assignments
 GPIO_GREEN=17  # Pin 11
 GPIO_RED=27    # Pin 13
 
@@ -120,22 +117,6 @@ parse_cli_arguments() {
   fi
 }
 
-resolve_repository_workspace() {
-  # Ensures repository assets and manifests are available on disk.
-  if [ ! -f "${REPO_ROOT}/pyproject.toml" ]; then
-    msg_info "Manifests missing locally. Bootstrapping repository into ${TARGET_DIR}"
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y --no-install-recommends git >/dev/null 2>&1
-    if [ ! -d "$TARGET_DIR" ]; then
-      git clone https://github.com/jthurm11/resilient-wireless-pid.git "$TARGET_DIR" >/dev/null 2>&1
-    else
-      git -C "$TARGET_DIR" pull >/dev/null 2>&1 || true
-    fi
-    REPO_ROOT="$TARGET_DIR"
-    msg_ok "Repository synchronized at ${REPO_ROOT}"
-  fi
-}
-
 check_execution_environment() {
   # Verifies superuser execution rights and processor architecture.
   if [ "$(id -u)" -ne 0 ]; then
@@ -155,6 +136,22 @@ find_wifi_interface() {
   local iface
   iface="$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^wlan|^wl' | head -n 1 || true)"
   echo "${iface:-wlan0}"
+}
+
+resolve_repository_workspace() {
+  # Ensures repository assets and manifests are available on disk.
+  if [ ! -f "${REPO_ROOT}/pyproject.toml" ]; then
+    msg_info "Workspace missing locally. Cloning repository into ${TARGET_DIR}"
+    apt-get update -y >/dev/null 2>&1
+    apt-get install -y --no-install-recommends git ca-certificates >/dev/null 2>&1
+    if [ ! -d "$TARGET_DIR" ]; then
+      git clone https://github.com/jthurm11/resilient-wireless-pid.git "$TARGET_DIR" >/dev/null 2>&1
+    else
+      git -C "$TARGET_DIR" pull >/dev/null 2>&1 || true
+    fi
+    REPO_ROOT="$TARGET_DIR"
+    msg_ok "Repository ready at ${REPO_ROOT}"
+  fi
 }
 
 configure_secondary_network() {
@@ -210,7 +207,6 @@ remove_secondary_network() {
   fi
 
   rm -f /etc/network/interfaces.d/dcs-alias
-  
   msg_ok "Subnet aliases removed"
 }
 
@@ -256,10 +252,38 @@ enable_hardware_buses() {
   modprobe sch_netem 2>/dev/null || true
 
   if [ ! -e "/dev/i2c-1" ]; then
-    msg_warn "/dev/i2c-1 not yet active. A reboot may be required if runtime dtparam failed."
+    msg_warn "/dev/i2c-1 not instantiated. Reboot required if runtime dtparam failed."
   else
     msg_ok "I2C (/dev/i2c-1) and netem modules enabled"
   fi
+}
+
+install_docker_if_missing() {
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  msg_info "Installing Docker Engine and Compose plugin"
+  apt-get update -y >/dev/null 2>&1
+  apt-get install -y --no-install-recommends ca-certificates curl gnupg >/dev/null 2>&1
+  install -m 0755 -d /etc/apt/keyrings
+  
+  if [ ! -f "/etc/apt/keyrings/docker.gpg" ]; then
+    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes >/dev/null 2>&1
+    chmod a+r /etc/apt/keyrings/docker.gpg
+  fi
+
+  local arch codename
+  arch="$(dpkg --print-architecture)"
+  codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+  [ "$codename" = "trixie" ] || codename="bookworm"  # Fallback to bookworm repo if trixie upstream unmapped
+
+  echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${codename} stable" > /etc/apt/sources.list.d/docker.list
+
+  apt-get update -y >/dev/null 2>&1
+  apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
+  systemctl enable --now docker >/dev/null 2>&1
+  msg_ok "Docker Engine and Compose plugin installed"
 }
 
 deploy_led_monitor() {
@@ -371,6 +395,7 @@ deploy_node_service() {
   
   if [ "$role" == "ctrl" ]; then
     unit_name="dcs-controller.service"
+    install_docker_if_missing
     msg_info "Deploying controller runtime and telemetry stack"
     bash "${REPO_ROOT}/scripts/infra/telemetry_stack.sh" create --no-header >/dev/null 2>&1 || true
 
@@ -384,6 +409,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=${REPO_ROOT}
+Environment="DCS_ENV=bare_metal"
 ExecStart=${REPO_ROOT}/.venv/bin/python -m resilient_pid.main --enable-ui
 Restart=on-failure
 RestartSec=5
@@ -406,6 +432,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=${REPO_ROOT}
+Environment="DCS_ENV=bare_metal"
 ExecStart=${REPO_ROOT}/.venv/bin/python -m resilient_pid.plant.plant_interface --mode hardware --host 0.0.0.0 --port 5005
 Restart=always
 RestartSec=3
@@ -429,10 +456,10 @@ action_create() {
 
   echo -e "${BOLD}Provisioning Raspberry Pi Bare-Metal Node [Role: ${role^^}]...${CL}"
   check_execution_environment
+  resolve_repository_workspace
   enable_hardware_buses
   configure_hostname "$target_hostname"
   configure_secondary_network "$role"
-  resolve_repository_workspace
   provision_workspace
   deploy_led_monitor "$role"
   deploy_node_service "$role"
@@ -496,12 +523,10 @@ action_status() {
   echo -e "${TAB}${BOLD}Active Node Role:${CL}     ${role^^}"
   echo -e "${TAB}${BOLD}Host System:${CL}          $(hostname) ($(uname -m))"
   
-  # Network alias query
   local ip_configured
   ip_configured="$(ip -4 addr show dev "$iface" | grep -oE "10\.10\.10\.[12]" || echo "NONE")"
   echo -e "${TAB}${BOLD}DCS Secondary IP:${CL}     ${ip_configured} on ${iface}"
 
-  # Runtime unit status
   if [ -n "$unit" ]; then
     local status_line
     status_line="$(systemctl is-active "$unit" 2>/dev/null || echo "inactive")"
@@ -512,14 +537,12 @@ action_status() {
   led_status="$(systemctl is-active dcs-led-monitor.service 2>/dev/null || echo "inactive")"
   echo -e "${TAB}${BOLD}Diagnostic Supervisor:${CL} dcs-led-monitor.service (${led_status})"
 
-  # Peripheral I2C bus probe
   if command -v i2cdetect >/dev/null 2>&1; then
     local i2c_check
     i2c_check="$(i2cdetect -y 1 2>/dev/null | grep -E "4c|29" || true)"
     echo -e "${TAB}${BOLD}Detected I2C Devices:${CL} ${i2c_check:-No peripherals detected}"
   fi
 
-  # Telemetry stack status on controller node
   if [ "$role" == "ctrl" ] && [ -f "${REPO_ROOT}/scripts/infra/telemetry_stack.sh" ]; then
     echo -e "\n${BOLD}Telemetry Microservice Stack:${CL}"
     bash "${REPO_ROOT}/scripts/infra/telemetry_stack.sh" status --no-header
@@ -527,8 +550,9 @@ action_status() {
   echo ""
 }
 
-header_info
+# Execution Entrypoint: parse arguments FIRST, then emit header if enabled
 parse_cli_arguments "$@"
+header_info
 
 case "$ACTION" in
   create)  action_create ;;

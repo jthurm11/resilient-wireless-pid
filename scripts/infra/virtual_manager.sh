@@ -429,8 +429,8 @@ status_lxc() {
   pct list | grep -E "201|202" || echo "No active mock containers found."
 }
 
-header_info
 parse_cli_arguments "$@"
+header_info
 
 if [ -z "$TARGET" ]; then
   auto_detect_target

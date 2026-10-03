@@ -117,8 +117,8 @@ status_stack() {
   echo ""
 }
 
-header_info
 parse_cli_arguments "$@"
+header_info
 
 case "$ACTION" in
   create)  create_stack ;;
