@@ -220,16 +220,30 @@ restore_hostname() {
 enable_hardware_buses() {
   """Loads peripheral hardware kernel modules and device tree overlays."""
   msg_info "Enabling kernel peripheral bus overlays"
+
   local config_txt="/boot/firmware/config.txt"
   [ ! -f "$config_txt" ] && config_txt="/boot/config.txt"
 
-  if [ -f "$config_txt" ] && ! grep -q "^dtparam=i2c_arm=on" "$config_txt"; then
-    echo "dtparam=i2c_arm=on" >> "$config_txt"
+  if [ -f "$config_txt" ]; then
+    if ! grep -q "^dtparam=i2c_arm=on" "$config_txt"; then
+      echo "dtparam=i2c_arm=on" >> "$config_txt"
+    fi
   fi
-  
+
+  if command -v dtparam >/dev/null 2>&1; then
+    dtparam i2c_arm=on 2>/dev/null || true
+  elif command -v dtoverlay >/dev/null 2>&1; then
+    dtoverlay i2c-arm 2>/dev/null || true
+  fi
+
   modprobe i2c-dev 2>/dev/null || true
   modprobe sch_netem 2>/dev/null || true
-  msg_ok "I2C and netem modules enabled"
+
+  if [ ! -e "/dev/i2c-1" ]; then
+    msg_warn "/dev/i2c-1 not yet active. A reboot may be required if runtime dtparam failed."
+  else
+    msg_ok "I2C (/dev/i2c-1) and netem modules active"
+  fi
 }
 
 deploy_led_monitor() {
