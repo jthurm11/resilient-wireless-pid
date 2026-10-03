@@ -1,4 +1,4 @@
-# Mock Environment Setup Guide
+# Virtual Testbed Setup Guide (Proxmox LXC & Docker)
 
 This procedure configures an isolated dual-node Distributed Control System (DCS) testbed for pre-hardware simulation and validation. It ensures complete runtime parity with the bare-metal Raspberry Pi environment: deterministic socket addressing, isolated subnets (`10.10.10.0/24`), Linux kernel queue disciplines (`tc/netem`), and time-series telemetry logging.
 
@@ -13,16 +13,16 @@ Both Docker and Proxmox LXC tracks establish identical socket endpoints and netw
   * `10.10.10.2:5005` (UDP) $\to$ Dynamic state-space listener (`step(u) -> pv`)
 
 
-## Unified Testbed Management (`mock_environment.sh`)
+## Unified Testbed Management (`virtual_manager.sh`)
 
-All provisioning, health verification, and teardown workflows are managed through the centralized orchestrator `scripts/infra/mock_environment.sh`.  
+All provisioning, health verification, and teardown workflows are managed through the centralized orchestrator `scripts/infra/virtual_manager.sh`.
 
-* **Automatic Backend Detection:** When executed on a development workstation with an active Docker daemon, it defaults to the **Docker** backend. When run on a Proxmox VE hypervisor host shell, it defaults to the **LXC** backend.  
+* **Automatic Backend Detection:** When executed on a development workstation with an active Docker daemon, it defaults to the **Docker** backend. When run on a Proxmox VE hypervisor host shell, it defaults to the **LXC** backend.
 * **Explicit Targeting:** You can override auto-detection by passing `docker` or `lxc` explicitly as the first parameter.
 
 ```text
 Usage:
-  ./scripts/infra/mock_environment.sh [docker|lxc] {create|destroy|status} [--no-header]
+  ./scripts/infra/virtual_manager.sh [docker|lxc] {create|destroy|status} [options]
 
 ```
 
@@ -32,15 +32,17 @@ Usage:
 Two isolated execution targets are supported:
 
 1. **Docker (Local Workstation):** Runs the dual-node DCS environment locally via Docker Compose.
-    * Control plane services share the network namespace of `dcs-ctrl-node` (`10.10.10.1`), while `dcs-plant-node` executes in a dedicated container (`10.10.10.2`). 
-    * The orchestrator automatically creates the `10.10.10.0/24` network bridge, initializes InfluxDB v2, mounts Grafana dashboards, and starts the real-time controller and plant runtimes automatically as container entrypoints. 
-    * *Prerequisites:* Docker Engine 24.0+ and Docker Compose v2 plugin. 
+* Control plane services share the network namespace of `dcs-ctrl-node` (`10.10.10.1`), while `dcs-plant-node` executes in a dedicated container (`10.10.10.2`).
+* The orchestrator automatically creates the `10.10.10.0/24` network bridge, initializes InfluxDB v2, mounts Grafana dashboards, and starts the real-time controller and plant runtimes automatically as container entrypoints.
+* *Prerequisites:* Docker Engine 24.0+ and Docker Compose v2 plugin.
 
-2. **Proxmox VE (LXC Testbed):** Deploys two Debian 13 containers on a Proxmox VE host connected via an isolated Linux software bridge (`vmbr1`). 
-    * The orchestrator persists hypervisor kernel modules, provisions `vmbr1`, creates CT 201 (`dcs-ctrl-node`) and CT 202 (`dcs-plant-node`), configures virtualenvs, and starts the telemetry stack inside CT 201 via `telemetry_stack.sh`. 
-    * Control loops are invoked interactively inside each container session. 
 
-## Workspace Provisioning & Access 
+2. **Proxmox VE (LXC Testbed):** Deploys two Debian 13 containers on a Proxmox VE host connected via an isolated Linux software bridge (`vmbr1`).
+* The orchestrator persists hypervisor kernel modules, provisions `vmbr1`, creates CT 201 (`dcs-ctrl-node`) and CT 202 (`dcs-plant-node`), configures virtual environments, and starts the telemetry stack inside CT 201 via `telemetry_stack.sh`.
+* Control loops run automatically via systemd services or can be invoked interactively inside container sessions.
+
+
+## Workspace Provisioning & Access
 
 ### Step 0: Prepare the Host
 
@@ -49,30 +51,30 @@ Clone the source repository onto your preferred target host and enter the reposi
 ```bash
 git clone https://github.com/jthurm11/resilient-wireless-pid.git
 cd resilient-wireless-pid
+
 ```
 
-> [!NOTE]  
-> All orchestration scripts must be executed from the **repository root directory** (`resilient-wireless-pid/`). 
-> 
-
+> [!NOTE]
+> All orchestration scripts must be executed from the **repository root directory** (`resilient-wireless-pid/`).
 
 ### Step 1: Provision the Testbed
 
-Deploy the stack:
+Deploy the virtual testbed:
 
 ```bash
-./scripts/infra/mock_environment.sh create
+./scripts/infra/virtual_manager.sh create
 # Explicit overrides:
-#   ./scripts/infra/mock_environment.sh docker create
-#   ./scripts/infra/mock_environment.sh lxc create
+#   ./scripts/infra/virtual_manager.sh docker create
+#   ./scripts/infra/virtual_manager.sh lxc create
+
 ```
 
 Check running container status:
 
 ```bash
-./scripts/infra/mock_environment.sh status
-```
+./scripts/infra/virtual_manager.sh status
 
+```
 
 ### Step 2: Access Container Terminals
 
@@ -83,6 +85,7 @@ Open two separate terminal windows from the repository root:
 ```bash
 # Docker deployment (OR) Proxmox deployment
 docker exec -it dcs-plant-node bash || pct enter 202
+
 ```
 
 **Terminal 2 (`dcs-ctrl-node`):**
@@ -90,39 +93,39 @@ docker exec -it dcs-plant-node bash || pct enter 202
 ```bash
 # Docker deployment (OR) Proxmox deployment
 docker exec -it dcs-ctrl-node bash || pct enter 201
+
 ```
 
 > [!WARNING]
-> Interactive loop commands (e.g., `run-plant` or `run-controller`) are strictly for the Proxmox LXC deployment. Docker containers execute these loops automatically on boot. If `systemd` daemon logic is active on LXC, you must run `systemctl stop dcs-controller.service` before launching interactive debugging sessions to prevent socket collisions.
-> 
+> Interactive loop commands (e.g., `run-plant` or `run-controller`) are intended for debugging. Docker containers and Proxmox LXC containers execute these loops automatically on boot via entrypoints or systemd. Before launching interactive debugging sessions on Proxmox LXC, run `systemctl stop dcs-controller.service` (on CT 201) or `systemctl stop dcs-plant.service` (on CT 202) to prevent UDP socket and HTTP port collisions.
 
-#### Step 2A (Optional): Proxmox LXC Interactive Session 
+#### Step 2A (Optional): Proxmox LXC Interactive Debugging
 
-In Proxmox, open two separate terminal sessions on the PVE host shell to start the control loop:
+To run the loop interactively on Proxmox, stop the background services and invoke the entry points directly:
 
 **Terminal 1 (`dcs-plant-node`):**
 
 ```bash
 pct enter 202
-```
-```bash
+systemctl stop dcs-plant.service
 cd /opt/resilient-wireless-pid && source .venv/bin/activate
-run-plant --mode simulate
+run-plant --mode simulate --host 0.0.0.0 --port 5005
+
 ```
 
 **Terminal 2 (`dcs-ctrl-node`):**
 
 ```bash
 pct enter 201
-```
-```bash
+systemctl stop dcs-controller.service
 cd /opt/resilient-wireless-pid && source .venv/bin/activate
 run-controller --enable-ui
+
 ```
 
-#### Step 2B (Optional): Docker Logs
+#### Step 2B (Optional): Inspecting Docker Logs
 
-In Docker, the controller and simulated plant loops start automatically on boot. To inspect Active Control Logs: 
+In Docker, the controller and simulated plant loops start automatically on boot. To inspect logs:
 
 ```bash
 # Follow real-time controller execution
@@ -130,15 +133,14 @@ docker compose -f deploy/docker/docker-compose.yml logs -f controller
 
 # Follow simulated plant physics
 docker compose -f deploy/docker/docker-compose.yml logs -f dcs-plant-node
-```
 
+```
 
 ### Step 3: Inject Kernel Network Emulation (`tc/netem`)
 
-Open a terminal session inside `dcs-ctrl-node` to apply network degradation to the outbound DCS interface:
+Open a terminal session inside `dcs-ctrl-node` to apply network degradation to the outbound DCS interface (`wlan0`):
 
 ```bash
-# Set interface target
 IFACE="wlan0"
 
 # Inject 40ms baseline delay, ±10ms jitter, and 2% packet loss
@@ -150,16 +152,17 @@ ping -c 10 10.10.10.2
 
 # Restore default line-rate transmission
 tc qdisc del dev $IFACE root
-```
 
+```
 
 ### Step 4: Decommissioning
 
-To stop containers, release network namespaces, and purge storage volumes:
+To stop containers, release network namespaces, and purge virtual volumes:
 
 ```bash
-./scripts/infra/mock_environment.sh destroy
+./scripts/infra/virtual_manager.sh destroy
 # Explicit overrides:
-#   ./scripts/infra/mock_environment.sh docker destroy
-#   ./scripts/infra/mock_environment.sh lxc destroy
+#   ./scripts/infra/virtual_manager.sh docker destroy
+#   ./scripts/infra/virtual_manager.sh lxc destroy
+
 ```
