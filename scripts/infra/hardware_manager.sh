@@ -531,6 +531,12 @@ except Exception:
   restore_hostname
   rm -f "$STATE_FILE"
 
+  if [ -d "${REPO_ROOT}/.venv" ]; then
+    msg_info "Purging Python virtual environment (${REPO_ROOT}/.venv)"
+    rm -rf "${REPO_ROOT}/.venv"
+    msg_ok "Virtual environment removed"
+  fi
+
   echo -e "\n${GN}${BOLD}Node Teardown Complete. Factory parameters restored.${CL}\n"
 }
 
