@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/infra/hardware_manager.sh
 # Provisions, inspects, and decommissions physical Raspberry Pi nodes for the resilient DCS testbed.
-# Configures secondary network aliases, systemd daemons, and GPIO status monitors.
+# Configures secondary network aliases, systemd daemons, and optional GPIO status monitors.
 
 set -Eeuo pipefail
 
@@ -25,6 +25,7 @@ GPIO_GREEN=17  # Pin 11
 GPIO_RED=27    # Pin 13
 
 SHOW_HEADER=true
+ENABLE_LED_MONITOR=false
 TARGET_ROLE=""
 ACTION=""
 
@@ -47,21 +48,22 @@ print_usage() {
 Usage: $0 [ctrl|plant] {create|destroy|status} [options]
 
 Commands:
-  create          Configure host networking, dependencies, and systemd units
-  destroy         Purge services, revert hostname, and remove network aliases
-  status          Interrogate node interfaces, peripheral buses, and services
+  create                Configure host networking, dependencies, and systemd units
+  destroy               Purge services, revert hostname, and remove network aliases
+  status                Interrogate node interfaces, peripheral buses, and services
 
 Positional Arguments:
-  role            Node operational target: 'ctrl' (10.10.10.1) or 'plant' (10.10.10.2)
-                  Required for 'create' unless state file exists. Optional for 'status'/'destroy'.
+  role                  Node operational target: 'ctrl' (10.10.10.1) or 'plant' (10.10.10.2)
+                        Required for 'create' unless state file exists. Optional for 'status'/'destroy'.
 
 Options:
-  -h, --help      Display this help message and exit
-  -q, --no-header Suppress ASCII header display
+  --enable-led-monitor  Deploy the optional breadboard LED diagnostic monitor service
+  -h, --help            Display this help message and exit
+  -q, --no-header       Suppress ASCII header display
 
 Examples:
   sudo $0 ctrl create
-  sudo $0 plant create
+  sudo $0 plant create --enable-led-monitor
   sudo $0 status
   sudo $0 destroy
 EOF
@@ -84,6 +86,9 @@ parse_cli_arguments() {
         ;;
       -q|--no-header)
         SHOW_HEADER=false
+        ;;
+      --enable-led-monitor|--with-leds)
+        ENABLE_LED_MONITOR=true
         ;;
       ctrl|plant)
         TARGET_ROLE="$arg"
@@ -276,7 +281,7 @@ install_docker_if_missing() {
   local arch codename
   arch="$(dpkg --print-architecture)"
   codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-  [ "$codename" = "trixie" ] || codename="bookworm"  # Fallback to bookworm repo if trixie upstream unmapped
+  [ "$codename" = "trixie" ] || codename="bookworm"
 
   echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${codename} stable" > /etc/apt/sources.list.d/docker.list
 
@@ -287,13 +292,13 @@ install_docker_if_missing() {
 }
 
 deploy_led_monitor() {
-  # Deploys gpiozero-backed diagnostic state daemon as a systemd service.
+  # Deploys diagnostic state daemon as an optional development service.
   # Args: $1 (role: 'ctrl' or 'plant')
   local role="$1"
   local peer_ip=""
   [ "$role" == "ctrl" ] && peer_ip="$PLANT_IP" || peer_ip="$CTRL_IP"
 
-  msg_info "Deploying hardware diagnostic LED monitor daemon"
+  msg_info "Deploying optional hardware diagnostic LED monitor daemon"
   
   cat <<EOF > /usr/local/bin/dcs-led-monitor.py
 #!/usr/bin/env python3
@@ -372,19 +377,33 @@ EOF
 }
 
 provision_workspace() {
-  # Installs system packages, prepares venv, and compiles repo in editable mode.
-  msg_info "Configuring repository virtual environment and dependencies"
+  # Installs system packages conditionally per role and prepares the virtualenv.
+  local role="$1"
+  local base_pkgs=("python3-pip" "python3-venv" "iproute2")
+
+  if [ "$role" == "plant" ]; then
+    # Hardware Plant requires SMBus (I2C) and the RPi.GPIO character shim
+    base_pkgs+=("python3-smbus2" "python3-rpi-lgpio" "i2c-tools")
+  fi
+
+  if [ "$ENABLE_LED_MONITOR" = true ]; then
+    # LED monitor daemon strictly requires gpiozero
+    base_pkgs+=("python3-gpiozero")
+  fi
+
+  msg_info "Installing minimal system packages: ${base_pkgs[*]}"
   apt-get update -y >/dev/null 2>&1
-  apt-get install -y --no-install-recommends \
-    python3-pip python3-venv python3-gpiozero python3-libgpiod i2c-tools iproute2 >/dev/null 2>&1
+  apt-get install -y --no-install-recommends "${base_pkgs[@]}" >/dev/null 2>&1
 
   cd "$REPO_ROOT"
-  [ ! -d ".venv" ] && python3 -m venv .venv
+  if [ ! -d ".venv" ]; then
+    python3 -m venv --system-site-packages .venv
+  fi
   source .venv/bin/activate
   pip install --upgrade pip >/dev/null 2>&1
   pip install -r requirements.txt >/dev/null 2>&1
   pip install -e . >/dev/null 2>&1
-  msg_ok "Dependencies installed and package registered"
+  msg_ok "Workspace and dependencies ready"
 }
 
 deploy_node_service() {
@@ -396,13 +415,14 @@ deploy_node_service() {
   if [ "$role" == "ctrl" ]; then
     unit_name="dcs-controller.service"
     install_docker_if_missing
+
     msg_info "Deploying controller runtime and telemetry stack"
     bash "${REPO_ROOT}/scripts/infra/telemetry_stack.sh" create --no-header >/dev/null 2>&1 || true
 
     cat <<EOF > /etc/systemd/system/${unit_name}
 [Unit]
 Description=DCS Real-Time Controller and Orchestrator
-After=network-online.target dcs-led-monitor.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -410,7 +430,7 @@ Type=simple
 User=root
 WorkingDirectory=${REPO_ROOT}
 Environment="DCS_ENV=bare_metal"
-ExecStart=${REPO_ROOT}/.venv/bin/python -m resilient_pid.main --enable-ui
+ExecStart=${REPO_ROOT}/.venv/bin/run-controller --enable-ui
 Restart=on-failure
 RestartSec=5
 CPUSchedulingPolicy=rr
@@ -425,7 +445,7 @@ EOF
     cat <<EOF > /etc/systemd/system/${unit_name}
 [Unit]
 Description=DCS Plant Physical Runtime Daemon
-After=network-online.target dcs-led-monitor.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -433,7 +453,7 @@ Type=simple
 User=root
 WorkingDirectory=${REPO_ROOT}
 Environment="DCS_ENV=bare_metal"
-ExecStart=${REPO_ROOT}/.venv/bin/python -m resilient_pid.plant.plant_interface --mode hardware --host 0.0.0.0 --port 5005
+ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode hardware --host 0.0.0.0 --port 5005
 Restart=always
 RestartSec=3
 CPUSchedulingPolicy=rr
@@ -461,7 +481,11 @@ action_create() {
   configure_hostname "$target_hostname"
   configure_secondary_network "$role"
   provision_workspace
-  deploy_led_monitor "$role"
+  
+  if [ "$ENABLE_LED_MONITOR" = true ]; then
+    deploy_led_monitor "$role"
+  fi
+
   deploy_node_service "$role"
 
   echo "$role" > "$STATE_FILE"
@@ -470,7 +494,8 @@ action_create() {
   echo -e "${TAB}${BOLD}Hostname:${CL}  $(hostname)"
   echo -e "${TAB}${BOLD}Interface:${CL} $(find_wifi_interface):dcs"
   echo -e "${TAB}${BOLD}DCS IPv4:${CL}  $([ "$role" == "ctrl" ] && echo "$CTRL_IP" || echo "$PLANT_IP")"
-  echo -e "${TAB}${BOLD}Service:${CL}   $([ "$role" == "ctrl" ] && echo "dcs-controller.service" || echo "dcs-plant.service")\n"
+  echo -e "${TAB}${BOLD}Service:${CL}   $([ "$role" == "ctrl" ] && echo "dcs-controller.service" || echo "dcs-plant.service")"
+  echo -e "${TAB}${BOLD}LED Tool:${CL}  $([ "$ENABLE_LED_MONITOR" == true ] && echo "Enabled (dcs-led-monitor.service)" || echo "Disabled")\n"
 }
 
 action_destroy() {
@@ -498,7 +523,6 @@ except Exception:
     pass
 " 2>/dev/null || true
 
-  # Tear down telemetry containers if on controller node
   if [ -f "${REPO_ROOT}/scripts/infra/telemetry_stack.sh" ]; then
     bash "${REPO_ROOT}/scripts/infra/telemetry_stack.sh" destroy --no-header >/dev/null 2>&1 || true
   fi
@@ -534,7 +558,7 @@ action_status() {
   fi
 
   local led_status
-  led_status="$(systemctl is-active dcs-led-monitor.service 2>/dev/null || echo "inactive")"
+  led_status="$(systemctl is-active dcs-led-monitor.service 2>/dev/null || echo "not installed/inactive")"
   echo -e "${TAB}${BOLD}Diagnostic Supervisor:${CL} dcs-led-monitor.service (${led_status})"
 
   if command -v i2cdetect >/dev/null 2>&1; then
@@ -550,7 +574,7 @@ action_status() {
   echo ""
 }
 
-# Execution Entrypoint: parse arguments FIRST, then emit header if enabled
+# Entrypoint Router: Parse CLI flags first, then print banner if enabled
 parse_cli_arguments "$@"
 header_info
 

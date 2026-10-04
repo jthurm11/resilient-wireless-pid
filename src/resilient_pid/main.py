@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""src/resilient_pid/main.py
-
+"""
+src/resilient_pid/main.py
 Main runtime orchestrator and CLI entry point for resilient-wireless-pid.
 Supports standalone batch evaluation, auto-spawning C2, and bidirectional sync.
 """
@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Protocol
+from typing import Any, Dict, Protocol
 
 import requests
 
@@ -106,17 +106,53 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def push_c2_configuration(port: int, payload: dict[str, Any]) -> bool:
-    """Synchronize CLI configuration upstream to C2."""
-    url = f"http://127.0.0.1:{port}/api/control"
-    for _ in range(10):
+def wait_for_c2_ready(port: int, host: str = "127.0.0.1", timeout: float = 10.0) -> bool:
+    """
+    Polls the C2 TCP socket until accepting connections or timing out.
+
+    Args:
+        port (int): TCP port number.
+        host (str): Loopback interface host.
+        timeout (float): Maximum wait duration in seconds.
+
+    Returns:
+        bool: True if port is bound and listening, False otherwise.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
         try:
-            res = requests.post(url, json=payload, timeout=0.5)
+            with socket.create_connection((host, port), timeout=0.2):
+                return True
+        except (OSError, ConnectionRefusedError):
+            time.sleep(0.2)
+    return False
+
+
+def push_c2_configuration(port: int, payload: Dict[str, Any]) -> bool:
+    """
+    Transmits startup parameters to the C2 server once socket is reachable.
+
+    Args:
+        port (int): C2 HTTP listening port.
+        payload (dict): Startup parameter dictionary.
+
+    Returns:
+        bool: True if successfully pushed, False otherwise.
+    """
+    if not wait_for_c2_ready(port, timeout=8.0):
+        logger.warning("C2 server failed to bind port %d within timeout window.", port)
+        return False
+
+    url = f"http://127.0.0.1:{port}/api/control"
+    for attempt in range(5):
+        try:
+            res = requests.post(url, json=payload, timeout=1.0)
             if res.status_code == 200:
-                logger.info("Synchronized parameters to C2: %s", payload)
+                logger.info("Synchronized active parameters to C2: %s", payload)
                 return True
         except requests.RequestException:
-            time.sleep(0.2)
+            time.sleep(0.5)
+
     logger.warning("Could not reach C2 on port %d to push startup parameters.", port)
     return False
 
