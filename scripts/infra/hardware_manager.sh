@@ -480,7 +480,7 @@ action_create() {
   enable_hardware_buses
   configure_hostname "$target_hostname"
   configure_secondary_network "$role"
-  provision_workspace
+  provision_workspace "$role"
   
   if [ "$ENABLE_LED_MONITOR" = true ]; then
     deploy_led_monitor "$role"
