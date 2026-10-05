@@ -174,52 +174,146 @@ class SimulatedPlant(BasePlant):
 
 
 class HardwarePlant(BasePlant):
+    """
+    Physical hardware interface running on bare-metal Raspberry Pi.
+    Actuates a 12V 4-wire fan via EMC2101 (I2C 0x4C) and measures
+    ball levitation elevation via HC-SR04 ultrasonic sensor.
+    """
+
     def __init__(
         self,
-        pwm_pin: int = 18,
-        pwm_freq: int = 25000,
         i2c_bus: int = 1,
-        i2c_addr: int = 0x29,
+        emc2101_addr: int = 0x4C,
+        trig_pin: int = 23,
+        echo_pin: int = 24,
+        tube_length_cm: float = 50.0,
+        sensor_at_top: bool = True,
     ):
+        """
+        Initializes EMC2101 fan controller over I2C and HC-SR04 GPIO pins.
+
+        Args:
+            i2c_bus (int): I2C device bus number (/dev/i2c-1).
+            emc2101_addr (int): I2C hexadecimal address for EMC2101 (default: 0x4C).
+            trig_pin (int): BCM pin number for HC-SR04 trigger pulse (Pin 16).
+            echo_pin (int): BCM pin number for HC-SR04 echo receiver (Pin 18).
+            tube_length_cm (float): Physical acrylic tube column height in cm.
+            sensor_at_top (bool): True if HC-SR04 is mounted at top pointing down.
+        """
         if not HARDWARE_AVAILABLE:
             raise RuntimeError(
                 "Hardware drivers missing. Run only on physical Raspberry Pi nodes."
             )
-        self.pwm_pin = pwm_pin
-        self.sensor_addr = i2c_addr
 
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(self.pwm_pin, GPIO.OUT)
-        self.pwm = GPIO.PWM(self.pwm_pin, pwm_freq)
-        self.pwm.start(0.0)
+        self.emc_addr = emc2101_addr
+        self.trig_pin = trig_pin
+        self.echo_pin = echo_pin
+        self.tube_length_cm = tube_length_cm
+        self.sensor_at_top = sensor_at_top
+        self.last_valid_pv = 0.0
 
+        # Initialize EMC2101 over SMBus/I2C
         self.bus = smbus2.SMBus(i2c_bus)
+        self._init_emc2101()
+
+        # Initialize HC-SR04 Ultrasonic GPIO Lines
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(self.trig_pin, GPIO.OUT)
+        GPIO.setup(self.echo_pin, GPIO.IN)
+        GPIO.output(self.trig_pin, GPIO.LOW)
+        time.sleep(0.05)  # Transducer settling interval
+
         logger.info(
-            "Initialized PWM (Pin %d, %d Hz) and I2C (Bus %d, Addr 0x%02X)",
-            pwm_pin,
-            pwm_freq,
+            "HardwarePlant online: EMC2101 (0x%02X on I2C-%d) | HC-SR04 (TRIG=%d, ECHO=%d)",
+            self.emc_addr,
             i2c_bus,
-            i2c_addr,
+            self.trig_pin,
+            self.echo_pin,
         )
 
-    def step(self, u_t: float) -> float:
-        duty = max(0.0, min(100.0, u_t))
-        self.pwm.ChangeDutyCycle(duty)
-
+    def _init_emc2101(self) -> None:
+        """Configures EMC2101 internal registers for direct manual PWM control."""
         try:
-            raw_bytes = self.bus.read_word_data(self.sensor_addr, 0x14)
-            pv = float(raw_bytes * 0.1)
-            return max(0.0, min(100.0, pv))
+            # Register 0x4A: Fan Configuration (Bit 5 = 1 for Direct Mode)
+            current_config = self.bus.read_byte_data(self.emc_addr, 0x4A)
+            self.bus.write_byte_data(self.emc_addr, 0x4A, current_config | 0x20)
+            # Register 0x4C: Initialize Fan Setting to 0% duty
+            self.bus.write_byte_data(self.emc_addr, 0x4C, 0x00)
         except Exception as e:
-            logger.warning("I2C read failed: %s", e)
-            return 0.0
+            logger.error("Failed to initialize EMC2101 over I2C: %s", e)
+            raise
+
+    def step(self, u_t: float) -> float:
+        """
+        Sets fan actuator effort via EMC2101 and samples HC-SR04 elevation.
+
+        Args:
+            u_t (float): Commanded control effort [0.0, 100.0]%.
+
+        Returns:
+            float: Process variable elevation [0.0, 100.0]%.
+        """
+        # Actuation: Map duty cycle [0.0, 100.0]% to 8-bit register [0, 255]
+        duty_clamped = max(0.0, min(100.0, u_t))
+        reg_value = int(round((duty_clamped / 100.0) * 255.0))
+        try:
+            self.bus.write_byte_data(self.emc_addr, 0x4C, reg_value)
+        except Exception as e:
+            logger.warning("EMC2101 I2C write failed: %s", e)
+
+        # Sensing: Fire HC-SR04 trigger pulse (10 microseconds)
+        GPIO.output(self.trig_pin, GPIO.HIGH)
+        time.sleep(0.00001)
+        GPIO.output(self.trig_pin, GPIO.LOW)
+
+        # 10ms deadline: In a 50cm tube, max acoustic return is < 3ms.
+        # Bounding wait window to 10ms prevents blocking the 50ms control loop.
+        t_start_wait = time.perf_counter()
+        timeout_start = t_start_wait + 0.010
+
+        pulse_start = time.perf_counter()
+        while GPIO.input(self.echo_pin) == 0:
+            pulse_start = time.perf_counter()
+            if pulse_start > timeout_start:
+                return self.last_valid_pv
+
+        pulse_end = pulse_start
+        timeout_end = pulse_start + 0.010
+        while GPIO.input(self.echo_pin) == 1:
+            pulse_end = time.perf_counter()
+            if pulse_end > timeout_end:
+                break
+
+        # Calculate one-way acoustic transit distance (Speed of sound = 34,300 cm/s)
+        duration = pulse_end - pulse_start
+        distance_cm = (duration * 34300.0) / 2.0
+
+        # Physical sanity check (ignore spurious reflections beyond tube height)
+        if distance_cm <= 0.0 or distance_cm > (self.tube_length_cm + 10.0):
+            return self.last_valid_pv
+
+        # Elevation transform based on mounting orientation
+        if self.sensor_at_top:
+            ball_height_cm = max(0.0, min(self.tube_length_cm, self.tube_length_cm - distance_cm))
+        else:
+            ball_height_cm = max(0.0, min(self.tube_length_cm, distance_cm))
+
+        pv_percent = float((ball_height_cm / self.tube_length_cm) * 100.0)
+        self.last_valid_pv = pv_percent
+
+        return pv_percent
 
     def cleanup(self) -> None:
-        if self.pwm:
-            self.pwm.ChangeDutyCycle(0.0)
-            self.pwm.stop()
+        """De-energizes fan motor and releases GPIO lines."""
+        try:
+            if hasattr(self, "bus"):
+                self.bus.write_byte_data(self.emc_addr, 0x4C, 0x00)
+                self.bus.close()
+        except Exception:
+            pass
+
         if GPIO:
-            GPIO.cleanup()
+            GPIO.cleanup([self.trig_pin, self.echo_pin])
 
 
 def parse_args() -> argparse.Namespace:
