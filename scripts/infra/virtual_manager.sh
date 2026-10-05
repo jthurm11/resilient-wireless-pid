@@ -319,7 +319,7 @@ CPUSchedulingPriority=80
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now dcs-plant.service"
+systemctl enable --now dcs-plant.service >/dev/null 2>&1"
 
   # Systemd and interactive environment tag injection
   pct exec 202 -- bash -c '
@@ -348,7 +348,7 @@ CPUSchedulingPriority=85
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now dcs-controller.service"
+systemctl enable --now dcs-controller.service >/dev/null 2>&1"
 
   pct exec 201 -- bash -c '
     echo "DCS_ENV=proxmox_lxc" >> /etc/environment
