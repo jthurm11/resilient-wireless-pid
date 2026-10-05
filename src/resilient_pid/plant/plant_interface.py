@@ -2,7 +2,7 @@
 """
 src/resilient_pid/plant/plant_interface.py
 Unified Plant Runtime Daemon for Resilient Wireless PID DCS.
-Provides an interchangeable interface between physical hardware (PWM/I2C)
+Provides an interchangeable interface between physical hardware (PWM/I2C/GPIO)
 and a realistic, continuous aerodynamic software twin (RK4 integration).
 """
 
@@ -85,7 +85,6 @@ class SimulatedPlant(BasePlant):
 
         # Actuator curve:
         #    9.5 m/s max airflow gives hover at ~48-52% PWM
-        #    12.5 m/s max airflow gives hover at ~45-50% PWM
         self.tau_fan = 0.18  # Rotational electromechanical time constant (s)
         self.v_air_max = 12.5  # Max steady-state airspeed (m/s)
 
@@ -118,9 +117,7 @@ class SimulatedPlant(BasePlant):
         f_wall = self.friction_coeff * v_ball
         accel = (f_aero / self.m) - self.g - f_wall
 
-        # Mechanical floor stop constraint:
-        # If at or below the floor and net force is downward, clamp state.
-        # If net force is positive, allow acceleration to lift the sphere.
+        # Mechanical floor stop constraint
         if y <= 0.0 and accel <= 0.0:
             accel = 0.0
             v_ball = 0.0
@@ -133,13 +130,11 @@ class SimulatedPlant(BasePlant):
     def step(self, u_t: float) -> float:
         u_clamped = float(np.clip(u_t, 0.0, 100.0))
 
-        # Fluid turbulence:
-        #    0.25: dynamic vortex shedding perturbation (proportional to fan speed)
-        #    0.12: damp stochastic vortex turbulence to avoid derivative kicks
+        # Dynamic vortex shedding perturbation
         turbulence_sigma = 0.25 * (self.state[0] / self.v_air_max)
         turbulent_flow = float(np.random.normal(0.0, max(0.01, turbulence_sigma)))
 
-        # Runge-Kutta 4 Numerical Integration
+        # Runge-Kutta 4 Integration
         k1 = self._dynamics(self.state, u_clamped, turbulent_flow)
         k2 = self._dynamics(self.state + 0.5 * self.dt * k1, u_clamped, turbulent_flow)
         k3 = self._dynamics(self.state + 0.5 * self.dt * k2, u_clamped, turbulent_flow)
@@ -162,10 +157,7 @@ class SimulatedPlant(BasePlant):
                 if abs(self.state[2]) < 0.03:
                     self.state[2] = 0.0
 
-        # Map to percentage [0.0, 100.0]%
         pv_true = (self.state[1] / self.L_tube) * 100.0
-
-        # Transducer acoustic reflection noise (0.25% variance)
         sensor_noise = np.random.normal(0.0, 0.25)
         return float(np.clip(pv_true + sensor_noise, 0.0, 100.0))
 
@@ -189,17 +181,6 @@ class HardwarePlant(BasePlant):
         tube_length_cm: float = 50.0,
         sensor_at_top: bool = True,
     ):
-        """
-        Initializes EMC2101 fan controller over I2C and HC-SR04 GPIO pins.
-
-        Args:
-            i2c_bus (int): I2C device bus number (/dev/i2c-1).
-            emc2101_addr (int): I2C hexadecimal address for EMC2101 (default: 0x4C).
-            trig_pin (int): BCM pin number for HC-SR04 trigger pulse (Pin 16).
-            echo_pin (int): BCM pin number for HC-SR04 echo receiver (Pin 18).
-            tube_length_cm (float): Physical acrylic tube column height in cm.
-            sensor_at_top (bool): True if HC-SR04 is mounted at top pointing down.
-        """
         if not HARDWARE_AVAILABLE:
             raise RuntimeError(
                 "Hardware drivers missing. Run only on physical Raspberry Pi nodes."
@@ -211,6 +192,7 @@ class HardwarePlant(BasePlant):
         self.tube_length_cm = tube_length_cm
         self.sensor_at_top = sensor_at_top
         self.last_valid_pv = 0.0
+        self.consecutive_timeouts = 0
 
         # Initialize EMC2101 over SMBus/I2C
         self.bus = smbus2.SMBus(i2c_bus)
@@ -224,11 +206,14 @@ class HardwarePlant(BasePlant):
         time.sleep(0.05)  # Transducer settling interval
 
         logger.info(
-            "HardwarePlant online: EMC2101 (0x%02X on I2C-%d) | HC-SR04 (TRIG=%d, ECHO=%d)",
+            "HardwarePlant online: EMC2101 (0x%02X on I2C-%d) | HC-SR04 (TRIG=%d, ECHO=%d) | "
+            "Mount: %s | Tube Height: %.1f cm",
             self.emc_addr,
             i2c_bus,
             self.trig_pin,
             self.echo_pin,
+            "TOP (Inverted)" if self.sensor_at_top else "BOTTOM (Direct)",
+            self.tube_length_cm,
         )
 
     def _init_emc2101(self) -> None:
@@ -246,12 +231,7 @@ class HardwarePlant(BasePlant):
     def step(self, u_t: float) -> float:
         """
         Sets fan actuator effort via EMC2101 and samples HC-SR04 elevation.
-
-        Args:
-            u_t (float): Commanded control effort [0.0, 100.0]%.
-
-        Returns:
-            float: Process variable elevation [0.0, 100.0]%.
+        Guarantees loop execution within strict real-time deadline (<= 15 ms).
         """
         # Actuation: Map duty cycle [0.0, 100.0]% to 8-bit register [0, 255]
         duty_clamped = max(0.0, min(100.0, u_t))
@@ -261,47 +241,61 @@ class HardwarePlant(BasePlant):
         except Exception as e:
             logger.warning("EMC2101 I2C write failed: %s", e)
 
-        # Sensing: Fire HC-SR04 trigger pulse (10 microseconds)
+        # Line Drain: Flush any lingering ECHO HIGH state from past acoustic bursts
+        t_drain_limit = time.perf_counter() + 0.003
+        while GPIO.input(self.echo_pin) == 1:
+            if time.perf_counter() > t_drain_limit:
+                logger.debug("ECHO line failed to drain LOW before TRIG; skipping ping.")
+                return self.last_valid_pv
+
+        # Transducer Holdoff & 10us Trigger Pulse
+        GPIO.output(self.trig_pin, GPIO.LOW)
+        time.sleep(0.002)
         GPIO.output(self.trig_pin, GPIO.HIGH)
         time.sleep(0.00001)
         GPIO.output(self.trig_pin, GPIO.LOW)
 
-        # 10ms deadline: In a 50cm tube, max acoustic return is < 3ms.
-        # Bounding wait window to 10ms prevents blocking the 50ms control loop.
-        t_start_wait = time.perf_counter()
-        timeout_start = t_start_wait + 0.010
-
-        pulse_start = time.perf_counter()
+        # Wait for Rising Edge (bounded to 8 ms guard window)
+        t_rise_deadline = time.perf_counter() + 0.008
         while GPIO.input(self.echo_pin) == 0:
-            pulse_start = time.perf_counter()
-            if pulse_start > timeout_start:
+            if time.perf_counter() > t_rise_deadline:
+                self.consecutive_timeouts += 1
                 return self.last_valid_pv
+        pulse_start = time.perf_counter()
 
-        pulse_end = pulse_start
-        timeout_end = pulse_start + 0.010
+        # Wait for Falling Edge (bounded to 12 ms ~ 200 cm max flight time)
+        # Tube is 50 cm; acoustic round-trip is ~2.91 ms.
+        t_fall_deadline = pulse_start + 0.012
         while GPIO.input(self.echo_pin) == 1:
-            pulse_end = time.perf_counter()
-            if pulse_end > timeout_end:
-                break
+            if time.perf_counter() > t_fall_deadline:
+                self.consecutive_timeouts += 1
+                return self.last_valid_pv
+        pulse_end = time.perf_counter()
 
-        # Calculate one-way acoustic transit distance (Speed of sound = 34,300 cm/s)
+        self.consecutive_timeouts = 0
+
+        # Acoustic Transit Distance (v_sound = 34,300 cm/s)
         duration = pulse_end - pulse_start
         distance_cm = (duration * 34300.0) / 2.0
 
-        # Physical sanity check (ignore spurious reflections beyond tube height)
-        if distance_cm <= 0.0 or distance_cm > (self.tube_length_cm + 10.0):
-            return self.last_valid_pv
+        # Valid Acoustic Window Check (2.0 cm to tube_length + 5.0 cm margin)
+        if 2.0 <= distance_cm <= (self.tube_length_cm + 5.0):
+            if self.sensor_at_top:
+                ball_height_cm = max(0.0, min(self.tube_length_cm, self.tube_length_cm - distance_cm))
+            else:
+                ball_height_cm = max(0.0, min(self.tube_length_cm, distance_cm))
 
-        # Elevation transform based on mounting orientation
-        if self.sensor_at_top:
-            ball_height_cm = max(0.0, min(self.tube_length_cm, self.tube_length_cm - distance_cm))
-        else:
-            ball_height_cm = max(0.0, min(self.tube_length_cm, distance_cm))
+            self.last_valid_pv = float((ball_height_cm / self.tube_length_cm) * 100.0)
 
-        pv_percent = float((ball_height_cm / self.tube_length_cm) * 100.0)
-        self.last_valid_pv = pv_percent
+        if logger.isEnabledFor(logging.DEBUG) or int(time.time() * 2) % 10 == 0:
+            logger.debug(
+                "HC-SR04: dist=%.1f cm, duration=%.2f ms, pv=%.1f%%",
+                distance_cm,
+                duration * 1000.0,
+                self.last_valid_pv,
+            )
 
-        return pv_percent
+        return self.last_valid_pv
 
     def cleanup(self) -> None:
         """De-energizes fan motor and releases GPIO lines."""
@@ -323,6 +317,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["hardware", "simulate"], default="hardware")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5005)
+    parser.add_argument(
+        "--sensor-at-top",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether the ultrasonic sensor is top-mounted (True) or bottom-mounted (False).",
+    )
+    parser.add_argument(
+        "--tube-length",
+        type=float,
+        default=50.0,
+        help="Physical column height in cm (default: 50.0).",
+    )
     return parser.parse_args()
 
 
@@ -334,11 +340,14 @@ def main() -> None:
             logger.error(
                 "Physical drivers unavailable. Launching simulated twin instead."
             )
-            plant = SimulatedPlant()
+            plant = SimulatedPlant(tube_length_m=args.tube_length / 100.0)
         else:
-            plant = HardwarePlant()
+            plant = HardwarePlant(
+                tube_length_cm=args.tube_length,
+                sensor_at_top=args.sensor_at_top,
+            )
     else:
-        plant = SimulatedPlant()
+        plant = SimulatedPlant(tube_length_m=args.tube_length / 100.0)
 
     logger.info(
         "Plant Service active | Mode: %s | Socket: %s:%d",
