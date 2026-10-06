@@ -1,45 +1,25 @@
 #!/usr/bin/env bash
-
-# ------------------------------------------------------------------------------
-# Script: scripts/infra/mock_environment.sh
-# Purpose: Unified Orchestrator for Distributed Control Mock Environments
-# Usage: ./mock_environment.sh [docker|lxc] [create|destroy|status] [--no-header]
-# ------------------------------------------------------------------------------
+# scripts/infra/virtual_environment.sh
+# Unified orchestrator for Docker and Proxmox LXC distributed control mock testbeds.
+# Manages dual-node network topologies, systemd services, and container lifecycles.
 
 set -Eeuo pipefail
 
-YW=$(echo "\033[33m")
-BL=$(echo "\033[36m")
-RD=$(echo "\033[01;31m")
-GN=$(echo "\033[1;92m")
-CL=$(echo "\033[m")
-BOLD=$(echo "\033[1m")
+YW="\033[33m"
+BL="\033[36m"
+RD="\033[01;31m"
+GN="\033[1;92m"
+CL="\033[m"
+BOLD="\033[1m"
 TAB="  "
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd || echo "")"
+TARGET_DIR="/opt/resilient-wireless-pid"
 COMPOSE_FILE="${REPO_ROOT}/deploy/docker/docker-compose.yml"
 
 SHOW_HEADER=true
 TARGET=""
 ACTION=""
-
-for arg in "$@"; do
-  case "$arg" in
-    --no-header|-q)
-      SHOW_HEADER=false
-      ;;
-    docker|lxc)
-      TARGET="$arg"
-      ;;
-    create|destroy|status)
-      ACTION="$arg"
-      ;;
-    *)
-      echo -e "${RD}Unknown argument:${CL} $arg"
-      exit 1
-      ;;
-  esac
-done
 
 header_info() {
   if [ "$SHOW_HEADER" = false ]; then return; fi
@@ -54,11 +34,76 @@ EOF
   echo -e "${BL}${BOLD}Distributed Control System - Mock Testbed Manager${CL}\n"
 }
 
+print_usage() {
+  # Renders CLI usage and option descriptions to stdout.
+  cat <<EOF
+Usage: $0 [docker|lxc] {create|destroy|status} [options]
+
+Commands:
+  create          Build and deploy multi-node testbed containers and networks
+  destroy         Purge testbed containers, bridges, and virtual volumes
+  status          Interrogate running testbed node health and interfaces
+
+Positional Arguments:
+  backend         Target runtime: 'docker' or 'lxc' (autodetected if omitted)
+
+Options:
+  -h, --help      Display this help message and exit
+  -q, --no-header Suppress ASCII header display
+EOF
+}
+
 msg_info()  { echo -ne "${TAB}${YW}[INFO]${CL} $1..."; }
 msg_ok()    { echo -e "\r\033[K${TAB}${GN}[OK]${CL} $1"; }
 msg_error() { echo -e "\r\033[K${TAB}${RD}[ERROR]${CL} $1"; exit 1; }
 
+parse_cli_arguments() {
+  # Parses command line arguments and options.
+  # Args: $@ (raw CLI parameters)
+  for arg in "$@"; do
+    case "$arg" in
+      -h|--help)
+        header_info
+        print_usage
+        exit 0
+        ;;
+      -q|--no-header)
+        SHOW_HEADER=false
+        ;;
+      docker|lxc)
+        TARGET="$arg"
+        ;;
+      create|destroy|status)
+        ACTION="$arg"
+        ;;
+      *)
+        msg_error "Unknown argument: '$arg'. Run '$0 --help' for usage."
+        ;;
+    esac
+  done
+
+  if [ -z "$ACTION" ]; then
+    header_info
+    print_usage
+    exit 1
+  fi
+}
+
+resolve_repository_workspace() {
+  # Ensures docker-compose.yml and manifests are available on host.
+  if [ ! -f "${REPO_ROOT}/deploy/docker/docker-compose.yml" ]; then
+    msg_info "Workspace missing locally. Cloning repository into ${TARGET_DIR}"
+    if [ ! -d "$TARGET_DIR" ]; then
+      git clone https://github.com/jthurm11/resilient-wireless-pid.git "$TARGET_DIR" >/dev/null 2>&1
+    fi
+    REPO_ROOT="$TARGET_DIR"
+    COMPOSE_FILE="${REPO_ROOT}/deploy/docker/docker-compose.yml"
+    msg_ok "Repository ready at ${REPO_ROOT}"
+  fi
+}
+
 auto_detect_target() {
+  # Detects available hypervisor or container subsystems to assign TARGET backend.
   local has_pve=false
   local has_docker=false
 
@@ -74,11 +119,7 @@ auto_detect_target() {
     TARGET="lxc"
   elif [ "$has_pve" = false ] && [ "$has_docker" = true ]; then
     if ! docker info >/dev/null 2>&1; then
-      if [[ "$OSTYPE" == darwin* ]]; then
-        msg_error "Docker is installed but not running. Try starting the Docker API: 'open -a Docker' "
-      else
-        msg_error "Docker is installed but not running."
-      fi
+      msg_error "Docker is installed but daemon is not running."
     fi
     TARGET="docker"
   elif [ "$has_pve" = true ] && [ "$has_docker" = true ]; then
@@ -106,21 +147,20 @@ auto_detect_target() {
   fi
 }
 
-# ==============================================================================
-# DOCKER TRACK
-# ==============================================================================
 create_docker() {
+  # Deploys Docker Compose multi-container pods and network topology.
   echo -e "${BOLD}Provisioning Docker Mock Pods & Network Topology...${CL}"
   msg_info "Building container images and initializing dcs_net bridge"
   docker compose -f "$COMPOSE_FILE" up -d --build >/dev/null 2>&1
   msg_ok "All Docker nodes online"
 
   echo -e "\n${GN}${BOLD}Docker Mock Testbed Ready.${CL}"
-  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} 10.10.10.1 (UI: http://localhost:5050 | Grafana: http://localhost:3000)"
+  echo -e "${TAB}${BOLD}dcs-ctrl-node: ${CL} 10.10.10.1 (UI: http://127.0.0.1:5050 | Grafana: http://127.0.0.1:3000)"
   echo -e "${TAB}${BOLD}dcs-plant-node:${CL} 10.10.10.2 (UDP Socket: 5005)\n"
 }
 
 destroy_docker() {
+  # Stops and purges Docker Compose containers, bridges, and volumes.
   echo -e "${BOLD}Tearing down Docker Mock Stack...${CL}"
   msg_info "Stopping containers and deleting virtual interfaces"
   docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1
@@ -128,14 +168,13 @@ destroy_docker() {
 }
 
 status_docker() {
+  # Queries process status of running Docker Compose services.
   echo -e "${BOLD}Docker Infrastructure Status:${CL}\n"
   docker compose -f "$COMPOSE_FILE" ps
 }
 
-# ==============================================================================
-# PROXMOX LXC TRACK (Inlined Native Provisioner)
-# ==============================================================================
 pve_check_storage() {
+  # Selects available Proxmox storage pool for container volume provisioning.
   STORAGE="local-lvm"
   if ! pvesm status -storage "$STORAGE" &>/dev/null; then
     STORAGE="local"
@@ -143,6 +182,7 @@ pve_check_storage() {
 }
 
 pve_configure_kernel() {
+  # Loads and persists Linux Traffic Control kernel queuing modules.
   msg_info "Configuring host kernel modules for traffic control"
   local modules=("sch_netem" "cls_u32" "ifb" "sch_tbf" "sch_prio")
   for mod in "${modules[@]}"; do
@@ -155,6 +195,7 @@ pve_configure_kernel() {
 }
 
 pve_configure_network() {
+  # Configures isolated Linux bridge vmbr1 for inter-node control datagrams.
   msg_info "Verifying isolated DCS bridge (vmbr1)"
   if ! grep -q "iface vmbr1" /etc/network/interfaces; then
     cat <<EOF >> /etc/network/interfaces
@@ -164,7 +205,6 @@ iface vmbr1 inet manual
         bridge-ports none
         bridge-stp off
         bridge-fd 0
-# Internal testing bridge for DCS traffic
 EOF
     if command -v ifreload >/dev/null 2>&1; then
       ifreload -a
@@ -178,6 +218,7 @@ EOF
 }
 
 pve_fetch_template() {
+  # Downloads latest Debian standard LXC appliance template if missing.
   msg_info "Verifying Debian 13 template"
   pveam update >/dev/null 2>&1
   TEMPLATE=$(pveam available -section system | awk '{print $2}' | grep "debian-13-standard" | head -n 1 || true)
@@ -191,6 +232,8 @@ pve_fetch_template() {
 }
 
 pve_create_container() {
+  # Instantiates and starts an unprivileged LXC container attached to vmbr0 and vmbr1.
+  # Args: $1 (ctid), $2 (hostname), $3 (internal_ip)
   local ctid="$1"
   local hostname="$2"
   local internal_ip="$3"
@@ -221,6 +264,8 @@ pve_create_container() {
 }
 
 pve_install_base_pkgs() {
+  # Installs Python toolchains and network utilities inside target container.
+  # Args: $1 (ctid)
   local ctid="$1"
   msg_info "Installing POSIX utilities & Python on CT ${ctid}"
   sleep 2
@@ -233,6 +278,8 @@ pve_install_base_pkgs() {
 }
 
 pve_install_docker() {
+  # Provisions official Docker CE repository and runtime inside container.
+  # Args: $1 (ctid)
   local ctid="$1"
   msg_info "Configuring Docker Engine inside CT ${ctid}"
   pct exec "$ctid" -- bash -c "export DEBIAN_FRONTEND=noninteractive && \
@@ -248,9 +295,38 @@ pve_install_docker() {
 }
 
 pve_setup_systemd_services() {
+  # Configures systemd units and environment markers across LXC containers.
+  msg_info "Configuring global environment markers across LXC containers"
+
+  for ctid in 201 202; do
+    pct exec "$ctid" -- bash -c '
+      # Systemd EnvironmentFile target (overwrite, do not append with >>)
+      echo "DCS_ENV=proxmox_lxc" > /etc/environment
+
+      # Login shells and non-interactive profile loaders
+      cat << "EOF" > /etc/profile.d/dcs_env.sh
+export DCS_ENV=proxmox_lxc
+EOF
+      chmod +x /etc/profile.d/dcs_env.sh
+
+      # Interactive non-login bash shells (pct enter)
+      if ! grep -q "DCS_ENV" /root/.bashrc; then
+        echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
+      fi
+
+      # 4Virtual environment activation hook
+      if [ -f /opt/resilient-wireless-pid/.venv/bin/activate ]; then
+        if ! grep -q "DCS_ENV" /opt/resilient-wireless-pid/.venv/bin/activate; then
+          echo "export DCS_ENV=proxmox_lxc" >> /opt/resilient-wireless-pid/.venv/bin/activate
+        fi
+      fi
+    '
+  done
+  msg_ok "Environment variables anchored across CT 201 and CT 202"
+
   msg_info "Deploying systemd service units to LXC containers"
 
-  # Provision and enable the plant service on CT 202
+  # CT 202: Plant Node Service
   pct exec 202 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-plant.service
 [Unit]
 Description=DCS Plant Runtime Daemon
@@ -261,7 +337,8 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/resilient-wireless-pid
-EnvironmentFile=/etc/environment
+Environment=\"DCS_ENV=proxmox_lxc\"
+EnvironmentFile=-/etc/environment
 ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.plant.plant_interface --mode simulate --host 0.0.0.0 --port 5005
 Restart=always
 RestartSec=3
@@ -272,15 +349,9 @@ CPUSchedulingPriority=80
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now dcs-plant.service"
+systemctl enable --now dcs-plant.service >/dev/null 2>&1"
 
-  # Inject environment identification tags
-  pct exec 202 -- bash -c '
-    echo "DCS_ENV=proxmox_lxc" >> /etc/environment
-    echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
-  '
-
-  # Provision and enable the controller service on CT 201
+  # CT 201: Controller Node Service
   pct exec 201 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-controller.service
 [Unit]
 Description=DCS Real Time Controller and Orchestrator
@@ -291,7 +362,9 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/resilient-wireless-pid
-EnvironmentFile=/etc/environment
+Environment=\"DCS_ENV=proxmox_lxc\"
+Environment=\"PYTHONUNBUFFERED=1\"
+EnvironmentFile=-/etc/environment
 ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.main --enable-ui
 Restart=on-failure
 RestartSec=5
@@ -302,30 +375,23 @@ CPUSchedulingPriority=85
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now dcs-controller.service"
-
-    # Inject environment identification tags
-  pct exec 201 -- bash -c '
-    echo "DCS_ENV=proxmox_lxc" >> /etc/environment
-    echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
-  '
+systemctl enable --now dcs-controller.service >/dev/null 2>&1"
 
   msg_ok "Systemd daemons deployed and active on CT 201 and CT 202"
 }
 
 create_lxc() {
+  # Executes sequential deployment of Proxmox LXC containers and environments.
   echo -e "${BOLD}Deploying Native Proxmox LXC Infrastructure...${CL}"
   pve_check_storage
   pve_configure_kernel
   pve_configure_network
   pve_fetch_template
 
-  # Node 1: dcs-ctrl-node
   pve_create_container 201 "dcs-ctrl-node" "10.10.10.1"
   pve_install_base_pkgs 201
   pve_install_docker 201
 
-  # Node 2: dcs-plant-node
   pve_create_container 202 "dcs-plant-node" "10.10.10.2"
   pve_install_base_pkgs 202
 
@@ -358,7 +424,6 @@ create_lxc() {
   "
   msg_ok "Workspace ready on dcs-plant-node"
 
-  # Deploy and activate systemd runtimes across the mock environment
   pve_setup_systemd_services
 
   echo -e "\n${GN}${BOLD}Proxmox Testbed Fully Provisioned.${CL}"
@@ -367,6 +432,7 @@ create_lxc() {
 }
 
 destroy_lxc() {
+  # Stops and purges CT 201 and CT 202 containers from Proxmox host.
   echo -e "${BOLD}Decommissioning Proxmox LXC Testbed...${CL}"
   for ctid in 201 202; do
     if pct status "$ctid" >/dev/null 2>&1; then
@@ -380,19 +446,13 @@ destroy_lxc() {
 }
 
 status_lxc() {
+  # Lists active mock containers registered on Proxmox host.
   echo -e "${BOLD}Proxmox LXC Testbed Status:${CL}\n"
   pct list | grep -E "201|202" || echo "No active mock containers found."
 }
 
-# ==============================================================================
-# MAIN ROUTING
-# ==============================================================================
+parse_cli_arguments "$@"
 header_info
-
-if [ -z "$ACTION" ]; then
-  echo -e "${RD}Missing action.${CL} Usage: $0 [docker|lxc] {create|destroy|status} [--no-header]\n"
-  exit 1
-fi
 
 if [ -z "$TARGET" ]; then
   auto_detect_target
@@ -405,8 +465,4 @@ case "${TARGET}:${ACTION}" in
   lxc:create)     create_lxc ;;
   lxc:destroy)    destroy_lxc ;;
   lxc:status)     status_lxc ;;
-  *)
-    echo -e "${RD}Invalid command combination:${CL} ${TARGET}:${ACTION}"
-    exit 1
-    ;;
 esac

@@ -6,14 +6,14 @@ A software-defined hardening and evaluation framework designed to quantify and m
 
 ## Overview
 
-Industrial IoT (IIoT) control loops operating over shared wireless channels (e.g., IEEE 802.11) face significant stability degradation from stochastic latency, packet loss, and channel contention. This framework enables:
-- Programmatic injection of stochastic network impairments directly inside the Linux networking stack via kernel Traffic Control (`tc`) and Network Emulation (`netem`).
-- Direct empirical benchmarking across Standard Discrete PID, Dead-Time Compensated Smith Predictor, and Predictive State-Estimating Resilient Controllers.
-- Real-time sub-millisecond telemetry extraction into an InfluxDB v2/Grafana pipeline for stability boundary mapping and settling-time analysis.
+Industrial IoT (IIoT) control loops operating over shared wireless channels (e.g., IEEE 802.11) face stability degradation from stochastic transport delay, packet loss, and channel contention. This framework provides:
+* Kernel-level injection of stochastic network impairments via Linux Traffic Control (`tc`) and Network Emulation (`netem`).
+* Empirical benchmarking across Discrete PID, Dead-Time Compensated Smith Predictor, and Predictive State-Estimating Resilient Controllers.
+* Real-time sub-millisecond telemetry extraction into an InfluxDB v2 and Grafana pipeline for stability boundary mapping.
 
 ## System Architecture
 
-The testbed decouples real-time embedded control execution from human telemetry and supervisory orchestration across an isolated `10.10.10.0/24` subnet:
+The testbed decouples real-time embedded control execution from supervisory orchestration across an isolated `10.10.10.0/24` subnet:
 
 ```mermaid
 graph TD
@@ -45,137 +45,105 @@ graph TD
 ### Core Components
 
 * **Control Runtime Engine (`src/resilient_pid/controller/`)**: Discrete control laws supporting runtime switching between standard PID, Smith Predictor dead-time cancellation, and resilient observer estimation during dropouts.
-
-
-* **Plant Abstraction Layer (`src/resilient_pid/plant/`)**: Polymorphic execution target supporting physical PWM/I2C peripheral drivers (`HardwarePlant`) or a 4th-Order Runge-Kutta continuous aerodynamic twin (`SimulatedPlant`).
-
-
+* **Plant Abstraction Layer (`src/resilient_pid/plant/`)**: Polymorphic execution target supporting physical PWM/I2C peripheral drivers (`HardwarePlant`) or a 4th-order Runge-Kutta continuous aerodynamic twin (`SimulatedPlant`).
 * **Telemetry Pipeline (`src/resilient_pid/telemetry/`)**: Asynchronous, non-blocking ingestion client streaming process variables, setpoints, control efforts, and round-trip times to InfluxDB v2.
-
-
 * **Command & Control Console (`src/resilient_pid/c2/`)**: REST API and operator web console for live setpoint adjustments, algorithm toggling, and trial coordination.
 
+### System Prerequisites
 
-
-## Setup & Prerequisites
-
-* **Target OS**: Debian 13 (Trixie) or Raspberry Pi OS (64-bit).
-
-
-* **Kernel Modules**: `sch_netem`, `cls_u32` loaded into the active host/container kernel.
-
-
+* **Target OS**: Debian 13 (Trixie) or Raspberry Pi OS (64-bit Bookworm/Trixie).
+* **Kernel Modules**: `sch_netem`, `cls_u32`, and `i2c-dev` loaded into the active host kernel.
 * **Runtimes**: Python 3.10+, Docker Engine 24.0+ (with Compose v2 plugin), and `iproute2`.
-
-
 * **Privileges**: Elevated access (`sudo` or `CAP_NET_ADMIN`) for network queuing discipline manipulation.
 
+---
 
+## Deployment & Orchestration
 
-> **Note on Virtual Testing:** To provision isolated Docker containers or Proxmox LXC testbeds with zero environment drift, refer to the [Mock Environment Guide](docs/development/mock_environment_guide.md).
-> 
+The testbed is deployed and managed entirely through two automated lifecycle managers.
 
-### 1. Workspace Provisioning
+### Option A: Bare-Metal Hardware (Raspberry Pi Nodes)
+
+Bootstrap directly on the physical nodes (automatically provisions hostnames, static `10.10.10.0/24` aliases, I2C/netem kernel overlays, status LEDs, and real-time systemd daemons):
+
+```bash
+# On Controller Node (Pi Alpha):
+curl -fsSL https://raw.githubusercontent.com/jthurm11/resilient-wireless-pid/main/scripts/infra/hardware_manager.sh -o hardware_manager.sh
+sudo bash hardware_manager.sh ctrl create
+
+# On Plant Node (Pi Beta):
+curl -fsSL https://raw.githubusercontent.com/jthurm11/resilient-wireless-pid/main/scripts/infra/hardware_manager.sh -o hardware_manager.sh
+sudo bash hardware_manager.sh plant create
+
+```
+
+* Inspect active services, peripheral I2C buses, and aliases: `sudo ./hardware_manager.sh status`
+* Decommission and restore default factory parameters: `sudo ./hardware_manager.sh destroy`
+
+### Option B: Virtual Mock Testbed (Docker / Proxmox LXC)
+
+For workstation emulation or hypervisor testing without physical hardware, use `virtual_manager.sh` (details in the [Virtual Environment Guide](docs/development/virtual_environment_guide.md)):
 
 ```bash
 git clone https://github.com/jthurm11/resilient-wireless-pid.git
 cd resilient-wireless-pid
 
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install -e .
+# Automatically provisions Docker pods or Proxmox LXC containers CT 201/202
+./scripts/infra/virtual_manager.sh create
+
 ```
 
-### 2. Launch Telemetry Infrastructure
+* Inspect container status and health: `./scripts/infra/virtual_manager.sh status`
+* Teardown testbed and purge volumes: `./scripts/infra/virtual_manager.sh destroy`
 
-The time-series observability stack runs as containerized microservices managed via `scripts/infra/telemetry_stack.sh`:
+### Observability Health Check
+
+The InfluxDB v2 and Grafana telemetry stack is automatically deployed via the lifecycle managers. To inspect container bindings or execute a synthetic smoke test:
 
 ```bash
-# Provision InfluxDB v2 and Grafana
-./scripts/infra/telemetry_stack.sh create
-
 # Inspect container health and port bindings
 ./scripts/infra/telemetry_stack.sh status
 
 # Validate telemetry pipeline with a synthetic smoke test
 python3 scripts/test/telemetry_smoke_test.py
+
 ```
 
-### 3. Verify Traffic Control Capabilities
+---
 
-Confirm that the kernel has loaded the network emulation scheduler and exposes netlink queueing discipline manipulation:
+## Closed-Loop Benchmark Trial
 
+Once nodes are provisioned, the control loop, plant listener, and telemetry engines boot automatically in the background.
+
+### 1. Supervisory Control & Visualization
+
+* **Grafana Dashboards:** Navigate to `http://127.0.0.1:3000` (or `http://10.10.10.1:3000` on bare-metal) with credentials `admin`/`admin` to inspect real-time tracking error, control effort, and transit latency.
+* **C2 Web Console:** Navigate to `http://127.0.0.1:5050` (or `http://10.10.10.1:5050`) to adjust setpoints or switch control algorithms on the fly.
+* **Headless C2 Actuation:**
 ```bash
-# Verify netem kernel module is loaded
-sudo modprobe sch_netem
+curl -s -X POST http://127.0.0.1:5050/api/control \
+  -H "Content-Type: application/json" \
+  -d '{"algorithm": "smith", "setpoint": 65.0}'
 
-# Inspect active qdisc on inter-node DCS interface
-tc qdisc show dev wlan0
 ```
 
+### 2. Inject Stochastic Impairments
 
-## Quickstart Trial
-
-Follow this procedure to run an initial closed-loop test across the testbed:
-
-### 1. Plant Node (`dcs-plant-node` @ 10.10.10.2)
-
-Start the plant runtime daemon listening on UDP port `5005`:
-
-```bash
-run-plant --mode simulate --host 0.0.0.0 --port 5005
-```
-
-### 2. Controller Node (`dcs-ctrl-node` @ 10.10.10.1)
-
-Identify your active egress interface pointing to the plant node (e.g., `wlan0`):
+From the controller node (`dcs-ctrl-node`), apply stochastic delay, jitter, and loss onto the egress DCS interface pointing to the plant:
 
 ```bash
 IFACE="wlan0"
-```
 
-Launch the real-time controller runtime to establish the nominal baseline:
-
-```bash
-run-controller --mode baseline --setpoint 50.0 --enable-ui
-```
-
-* **Grafana Dashboard:** Navigate to `http://127.0.0.1:3000` (`admin`/`admin`) to inspect real-time tracking error, control effort, and baseline round-trip times.
-
-
-* **C2 Operator UI:** Navigate to `http://127.0.0.1:5050` to adjust setpoints or switch control algorithms dynamically.
-
-
-* **Headless C2 Execution:** Update parameters programmatically via REST:
-
-
-```bash
-curl -s -X POST [http://127.0.0.1:5050/api/control](http://127.0.0.1:5050/api/control) \
-  -H "Content-Type: application/json" \
-  -d '{"algorithm": "smith", "setpoint": 65.0}'
-```
-
-### 3. Inject Network Degradation
-
-With the loop stabilized, apply stochastic network degradation to the egress interface to observe destabilization in Grafana:
-
-```bash
 # Inject 40ms baseline delay, ±10ms Gaussian jitter, and 2% packet loss
 sudo tc qdisc add dev $IFACE root netem delay 40ms 10ms distribution normal loss 2%
 
-# Verify active queue rules and transit latency
+# Verify queue statistics and ping degradation
 tc -s qdisc show dev $IFACE
 ping -c 5 10.10.10.2
-```
 
-### 4. Clear Network Emulation
-
-Restore the interface to line-rate execution:
-
-```bash
+# Restore line-rate transmission
 sudo tc qdisc del dev $IFACE root
+
 ```
 
 ---
@@ -185,10 +153,7 @@ sudo tc qdisc del dev $IFACE root
 This project is an advanced research continuation developed for the Master of Engineering Capstone at the University of Connecticut.
 
 * **Preceding Implementation**: System concepts, architectural foundations, and hardware-in-the-loop insights originated from [`jthurm11/iot-real-time-scheduler-evaluation`](https://github.com/jthurm11/iot-real-time-scheduler-evaluation).
-
-
 * **Physical Testbed Design**: Baseline physical plant and ball-floating topology adapted from the PingPongPID research testbed by [`Salzmann (2025)`](https://doi.org/10.1021/acs.jchemed.5c00528).
-
 
 ## License
 
