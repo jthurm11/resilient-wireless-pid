@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 src/resilient_pid/main.py
-Main runtime orchestrator and CLI entry point for resilient-wireless-pid.
-Supports standalone batch evaluation, auto-spawning C2, and bidirectional sync.
+Main runtime orchestrator and real-time execution loop for resilient-wireless-pid.
+Coordinates supervisory C2 state, real-time UDP telemetry, and InfluxDB persistence.
 """
 
 import argparse
@@ -30,7 +30,7 @@ logger = logging.getLogger("DCSControllerMain")
 
 
 class ControllerProtocol(Protocol):
-    """Structural subtyping protocol for DCS controller implementations."""
+    """Structural protocol for DCS controller implementations."""
 
     def reset(self) -> None: ...
 
@@ -48,6 +48,7 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse runtime command-line configuration arguments."""
     parser = argparse.ArgumentParser(
         description="Resilient Wireless DCS Runtime Controller"
     )
@@ -106,18 +107,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def wait_for_c2_ready(port: int, host: str = "127.0.0.1", timeout: float = 10.0) -> bool:
-    """
-    Polls the C2 TCP socket until accepting connections or timing out.
-
-    Args:
-        port (int): TCP port number.
-        host (str): Loopback interface host.
-        timeout (float): Maximum wait duration in seconds.
-
-    Returns:
-        bool: True if port is bound and listening, False otherwise.
-    """
+def wait_for_c2_ready(
+    port: int, host: str = "127.0.0.1", timeout: float = 10.0
+) -> bool:
+    """Polls C2 TCP socket until reachable or timeout expires."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -129,22 +122,13 @@ def wait_for_c2_ready(port: int, host: str = "127.0.0.1", timeout: float = 10.0)
 
 
 def push_c2_configuration(port: int, payload: Dict[str, Any]) -> bool:
-    """
-    Transmits startup parameters to the C2 server once socket is reachable.
-
-    Args:
-        port (int): C2 HTTP listening port.
-        payload (dict): Startup parameter dictionary.
-
-    Returns:
-        bool: True if successfully pushed, False otherwise.
-    """
+    """Transmits startup configuration payload to C2 REST endpoint."""
     if not wait_for_c2_ready(port, timeout=8.0):
         logger.warning("C2 server failed to bind port %d within timeout window.", port)
         return False
 
     url = f"http://127.0.0.1:{port}/api/control"
-    for attempt in range(5):
+    for _ in range(5):
         try:
             res = requests.post(url, json=payload, timeout=1.0)
             if res.status_code == 200:
@@ -158,6 +142,8 @@ def push_c2_configuration(port: int, payload: Dict[str, Any]) -> bool:
 
 
 class ControllerRuntime:
+    """Executes the discrete real-time DCS control and telemetry loop."""
+
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.c2_url = f"http://127.0.0.1:{args.c2_port}"
@@ -177,6 +163,7 @@ class ControllerRuntime:
         self.kd = 0.06
         self.seq_num = 0
         self.last_known_pv = 0.0
+        self.last_u = 0.0
 
         self.controllers: dict[str, ControllerType] = {
             "baseline": DiscretePID(
@@ -216,7 +203,9 @@ class ControllerRuntime:
         self._socket: socket.socket | None = None
         if not self.args.mock_loop:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._socket.settimeout(self.dt * 0.8)
+            self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # 45ms timeout protects the 50ms discrete loop deadline
+            self._socket.settimeout(self.dt * 0.90)
 
     def _sync_initial_c2_state(self) -> None:
         """Query C2 synchronously once prior to loop boot to avoid tag desync."""
@@ -248,6 +237,7 @@ class ControllerRuntime:
                 self.trial_id = f"{self.mode}_{int(time.time())}"
 
     def start(self) -> None:
+        """Spawns background sync and initiates real-time sampling."""
         self._sync_initial_c2_state()
         logger.info(
             "Starting Controller | Target Plant: %s | Mode: %s | SP: %.2f | Trial: %s",
@@ -269,6 +259,7 @@ class ControllerRuntime:
         self._run_sampling_loop()
 
     def stop(self) -> None:
+        """Safely shuts down sockets, workers, and telemetry writers."""
         self._stop_event.set()
         if self._socket:
             self._socket.close()
@@ -279,6 +270,7 @@ class ControllerRuntime:
         logger.info("Controller halted.")
 
     def _c2_sync_loop(self) -> None:
+        """Background thread synchronizing parameters with supervisory C2."""
         endpoint = f"{self.c2_url}/api/status"
         while not self._stop_event.is_set():
             try:
@@ -301,6 +293,7 @@ class ControllerRuntime:
             time.sleep(1.0)
 
     def _run_sampling_loop(self) -> None:
+        """Executes real-time discrete control step on drift-free schedule."""
         next_tick = time.perf_counter()
         last_tick = time.perf_counter()
         mock_pv = 0.0
@@ -319,6 +312,7 @@ class ControllerRuntime:
                         ctrl.reset()
                     self.seq_num = 0
                     self.last_known_pv = 0.0
+                    self.last_u = 0.0
                     time.sleep(0.01)
                     next_tick = time.perf_counter()
                     continue
@@ -327,49 +321,77 @@ class ControllerRuntime:
                 dt = self.dt
                 trial = self.trial_id
 
-            controller = self.controllers.get(active_mode, self.controllers["baseline"])
+            controller = self.controllers.get(
+                active_mode, self.controllers["baseline"]
+            )
             is_loss = False
             rtt_ms = None
+            current_pv = self.last_known_pv
 
-            if isinstance(controller, ResilientPID):
-                u_t = controller.update(
-                    setpoint=sp, pv_actual=self.last_known_pv, is_loss=False
-                )
-            else:
-                u_t = controller.update(setpoint=sp, pv=self.last_known_pv)
-
+            # Transmit Actuation & Sample Process Feedback (Network First)
             if self.args.mock_loop:
-                mock_pv += (u_t * 0.1) - (mock_pv * 0.02)
-                self.last_known_pv = mock_pv
+                mock_pv += (self.last_u * 0.1) - (mock_pv * 0.02)
+                current_pv = mock_pv
+                self.last_known_pv = current_pv
                 rtt_ms = 0.5
             else:
                 t_tx = time.perf_counter()
                 payload = json.dumps(
-                    {"seq": self.seq_num, "u": u_t, "t_send": t_tx}
+                    {"seq": self.seq_num, "u": self.last_u, "t_send": t_tx}
                 ).encode("utf-8")
+
                 try:
                     if self._socket is not None:
                         self._socket.sendto(payload, self.plant_addr)
                         raw, _ = self._socket.recvfrom(1024)
                         rtt_ms = (time.perf_counter() - t_tx) * 1000.0
                         resp = json.loads(raw.decode("utf-8"))
-                        if resp.get("seq") == self.seq_num:
-                            self.last_known_pv = float(resp["pv"])
+                        rx_seq = resp.get("seq")
+
+                        # Validate sequence correspondence
+                        if rx_seq == self.seq_num:
+                            current_pv = float(resp["pv"])
+                            self.last_known_pv = current_pv
+                            is_loss = False
                         else:
+                            logger.warning(
+                                "Seq mismatch: expected %d, got %s",
+                                self.seq_num,
+                                rx_seq,
+                            )
                             is_loss = True
                     else:
                         is_loss = True
-                except (TimeoutError, ConnectionRefusedError, json.JSONDecodeError):
+                except (
+                    socket.timeout,
+                    TimeoutError,
+                    OSError,
+                    ConnectionRefusedError,
+                    json.JSONDecodeError,
+                    KeyError,
+                ) as exc:
+                    logger.debug("Telemetry drop (tick %d): %s", self.seq_num, exc)
                     is_loss = True
                     rtt_ms = None
 
-            if is_loss and isinstance(controller, ResilientPID):
+            # Advance Discrete Controller Dynamics (Single Step per Frame)
+            if isinstance(controller, ResilientPID):
                 u_t = controller.update(
-                    setpoint=sp, pv_actual=self.last_known_pv, is_loss=True
+                    setpoint=sp, pv_actual=current_pv, is_loss=is_loss
                 )
-                self.last_known_pv = controller.y_est
+                if is_loss:
+                    self.last_known_pv = controller.y_est
+            elif isinstance(controller, DiscretePID):
+                u_t = controller.update(
+                    setpoint=sp, pv=self.last_known_pv, is_loss=is_loss
+                )
+            else:
+                u_t = controller.update(setpoint=sp, pv=self.last_known_pv)
 
+            self.last_u = u_t
             error = sp - self.last_known_pv
+
+            # Stream Telemetry Metrics to InfluxDB
             self.telemetry.log_control_metrics(
                 trial_id=trial,
                 algorithm=active_mode,
@@ -392,6 +414,7 @@ class ControllerRuntime:
 
 
 def main() -> None:
+    """CLI orchestrator entry point."""
     args = parse_args()
     c2_proc = None
     c2_log_file = None
