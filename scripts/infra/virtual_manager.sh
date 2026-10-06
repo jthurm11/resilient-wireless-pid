@@ -296,8 +296,37 @@ pve_install_docker() {
 
 pve_setup_systemd_services() {
   # Configures systemd units and environment markers across LXC containers.
+  msg_info "Configuring global environment markers across LXC containers"
+
+  for ctid in 201 202; do
+    pct exec "$ctid" -- bash -c '
+      # Systemd EnvironmentFile target (overwrite, do not append with >>)
+      echo "DCS_ENV=proxmox_lxc" > /etc/environment
+
+      # Login shells and non-interactive profile loaders
+      cat << "EOF" > /etc/profile.d/dcs_env.sh
+export DCS_ENV=proxmox_lxc
+EOF
+      chmod +x /etc/profile.d/dcs_env.sh
+
+      # Interactive non-login bash shells (pct enter)
+      if ! grep -q "DCS_ENV" /root/.bashrc; then
+        echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
+      fi
+
+      # 4Virtual environment activation hook
+      if [ -f /opt/resilient-wireless-pid/.venv/bin/activate ]; then
+        if ! grep -q "DCS_ENV" /opt/resilient-wireless-pid/.venv/bin/activate; then
+          echo "export DCS_ENV=proxmox_lxc" >> /opt/resilient-wireless-pid/.venv/bin/activate
+        fi
+      fi
+    '
+  done
+  msg_ok "Environment variables anchored across CT 201 and CT 202"
+
   msg_info "Deploying systemd service units to LXC containers"
 
+  # CT 202: Plant Node Service
   pct exec 202 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-plant.service
 [Unit]
 Description=DCS Plant Runtime Daemon
@@ -308,7 +337,8 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/resilient-wireless-pid
-EnvironmentFile=/etc/environment
+Environment=\"DCS_ENV=proxmox_lxc\"
+EnvironmentFile=-/etc/environment
 ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.plant.plant_interface --mode simulate --host 0.0.0.0 --port 5005
 Restart=always
 RestartSec=3
@@ -321,12 +351,7 @@ EOF
 systemctl daemon-reload
 systemctl enable --now dcs-plant.service >/dev/null 2>&1"
 
-  # Systemd and interactive environment tag injection
-  pct exec 202 -- bash -c '
-    echo "DCS_ENV=proxmox_lxc" >> /etc/environment
-    echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
-  '
-
+  # CT 201: Controller Node Service
   pct exec 201 -- bash -c "cat << 'EOF' > /etc/systemd/system/dcs-controller.service
 [Unit]
 Description=DCS Real Time Controller and Orchestrator
@@ -337,7 +362,9 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/resilient-wireless-pid
-EnvironmentFile=/etc/environment
+Environment=\"DCS_ENV=proxmox_lxc\"
+Environment=\"PYTHONUNBUFFERED=1\"
+EnvironmentFile=-/etc/environment
 ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.main --enable-ui
 Restart=on-failure
 RestartSec=5
@@ -349,11 +376,6 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable --now dcs-controller.service >/dev/null 2>&1"
-
-  pct exec 201 -- bash -c '
-    echo "DCS_ENV=proxmox_lxc" >> /etc/environment
-    echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
-  '
 
   msg_ok "Systemd daemons deployed and active on CT 201 and CT 202"
 }
