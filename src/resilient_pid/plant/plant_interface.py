@@ -83,8 +83,7 @@ class SimulatedPlant(BasePlant):
         self.cd = 0.47  # Sphere drag coefficient
         self.area = np.pi * (self.r**2)
 
-        # Actuator curve:
-        #    9.5 m/s max airflow gives hover at ~48-52% PWM
+        # Actuator curve: 9.5 m/s max airflow gives hover at ~48-52% PWM
         self.tau_fan = 0.18  # Rotational electromechanical time constant (s)
         self.v_air_max = 12.5  # Max steady-state airspeed (m/s)
 
@@ -134,7 +133,7 @@ class SimulatedPlant(BasePlant):
         turbulence_sigma = 0.25 * (self.state[0] / self.v_air_max)
         turbulent_flow = float(np.random.normal(0.0, max(0.01, turbulence_sigma)))
 
-        # Runge-Kutta 4 Integration
+        # Runge-Kutta 4 Numerical Integration
         k1 = self._dynamics(self.state, u_clamped, turbulent_flow)
         k2 = self._dynamics(self.state + 0.5 * self.dt * k1, u_clamped, turbulent_flow)
         k3 = self._dynamics(self.state + 0.5 * self.dt * k2, u_clamped, turbulent_flow)
@@ -157,7 +156,9 @@ class SimulatedPlant(BasePlant):
                 if abs(self.state[2]) < 0.03:
                     self.state[2] = 0.0
 
+        # Map to percentage [0.0, 100.0]%
         pv_true = (self.state[1] / self.L_tube) * 100.0
+
         sensor_noise = np.random.normal(0.0, 0.25)
         return float(np.clip(pv_true + sensor_noise, 0.0, 100.0))
 
@@ -192,7 +193,7 @@ class HardwarePlant(BasePlant):
         self.tube_length_cm = tube_length_cm
         self.sensor_at_top = sensor_at_top
         self.last_valid_pv = 0.0
-        self.consecutive_timeouts = 0
+        self.consecutive_misses = 0
 
         # Initialize EMC2101 over SMBus/I2C
         self.bus = smbus2.SMBus(i2c_bus)
@@ -207,7 +208,7 @@ class HardwarePlant(BasePlant):
 
         logger.info(
             "HardwarePlant online: EMC2101 (0x%02X on I2C-%d) | HC-SR04 (TRIG=%d, ECHO=%d) | "
-            "Mount: %s | Tube Height: %.1f cm",
+            "Mounting: %s | Height: %.1f cm",
             self.emc_addr,
             i2c_bus,
             self.trig_pin,
@@ -228,12 +229,48 @@ class HardwarePlant(BasePlant):
             logger.error("Failed to initialize EMC2101 over I2C: %s", e)
             raise
 
+    def _acquire_distance_cm(self) -> float:
+        """
+        Executes bounded acoustic ping sampling.
+        Returns measured distance in cm, or -1.0 if an edge times out.
+        """
+        # Drain residual HIGH state on ECHO from previous bounces
+        t_drain_limit = time.perf_counter() + 0.003
+        while GPIO.input(self.echo_pin) == 1:
+            if time.perf_counter() > t_drain_limit:
+                return -1.0
+
+        # Quiet holdoff (2ms) & 10us trigger pulse
+        GPIO.output(self.trig_pin, GPIO.LOW)
+        time.sleep(0.002)
+        GPIO.output(self.trig_pin, GPIO.HIGH)
+        time.sleep(0.00001)
+        GPIO.output(self.trig_pin, GPIO.LOW)
+
+        # Wait for rising edge (bounded to 6ms)
+        t_rise_deadline = time.perf_counter() + 0.006
+        while GPIO.input(self.echo_pin) == 0:
+            if time.perf_counter() > t_rise_deadline:
+                return -1.0
+        pulse_start = time.perf_counter()
+
+        # Wait for falling edge (bounded to 10ms ~ 170cm flight limit)
+        t_fall_deadline = pulse_start + 0.010
+        while GPIO.input(self.echo_pin) == 1:
+            if time.perf_counter() > t_fall_deadline:
+                return -1.0
+        pulse_end = time.perf_counter()
+
+        duration = pulse_end - pulse_start
+        distance_cm = (duration * 34300.0) / 2.0
+        return distance_cm
+
     def step(self, u_t: float) -> float:
         """
-        Sets fan actuator effort via EMC2101 and samples HC-SR04 elevation.
-        Guarantees loop execution within strict real-time deadline (<= 15 ms).
+        Actuates EMC2101 and samples ball elevation.
+        Guarantees loop return within <= 15ms.
         """
-        # Actuation: Map duty cycle [0.0, 100.0]% to 8-bit register [0, 255]
+        # Actuate Fan: Map [0.0, 100.0]% to 8-bit register [0, 255]
         duty_clamped = max(0.0, min(100.0, u_t))
         reg_value = int(round((duty_clamped / 100.0) * 255.0))
         try:
@@ -241,58 +278,41 @@ class HardwarePlant(BasePlant):
         except Exception as e:
             logger.warning("EMC2101 I2C write failed: %s", e)
 
-        # Line Drain: Flush any lingering ECHO HIGH state from past acoustic bursts
-        t_drain_limit = time.perf_counter() + 0.003
-        while GPIO.input(self.echo_pin) == 1:
-            if time.perf_counter() > t_drain_limit:
-                logger.debug("ECHO line failed to drain LOW before TRIG; skipping ping.")
-                return self.last_valid_pv
+        # Measure distance with 1 retry on miss
+        distance_cm = self._acquire_distance_cm()
+        if distance_cm < 0.0:
+            time.sleep(0.001)
+            distance_cm = self._acquire_distance_cm()
 
-        # Transducer Holdoff & 10us Trigger Pulse
-        GPIO.output(self.trig_pin, GPIO.LOW)
-        time.sleep(0.002)
-        GPIO.output(self.trig_pin, GPIO.HIGH)
-        time.sleep(0.00001)
-        GPIO.output(self.trig_pin, GPIO.LOW)
-
-        # Wait for Rising Edge (bounded to 8 ms guard window)
-        t_rise_deadline = time.perf_counter() + 0.008
-        while GPIO.input(self.echo_pin) == 0:
-            if time.perf_counter() > t_rise_deadline:
-                self.consecutive_timeouts += 1
-                return self.last_valid_pv
-        pulse_start = time.perf_counter()
-
-        # Wait for Falling Edge (bounded to 12 ms ~ 200 cm max flight time)
-        # Tube is 50 cm; acoustic round-trip is ~2.91 ms.
-        t_fall_deadline = pulse_start + 0.012
-        while GPIO.input(self.echo_pin) == 1:
-            if time.perf_counter() > t_fall_deadline:
-                self.consecutive_timeouts += 1
-                return self.last_valid_pv
-        pulse_end = time.perf_counter()
-
-        self.consecutive_timeouts = 0
-
-        # Acoustic Transit Distance (v_sound = 34,300 cm/s)
-        duration = pulse_end - pulse_start
-        distance_cm = (duration * 34300.0) / 2.0
-
-        # Valid Acoustic Window Check (2.0 cm to tube_length + 5.0 cm margin)
+        # Process reading if valid
         if 2.0 <= distance_cm <= (self.tube_length_cm + 5.0):
+            self.consecutive_misses = 0
             if self.sensor_at_top:
+                # Top sensor pointing down:
+                # At top (d ~ 0 cm) -> ball_height = tube_length (PV ~ 100%)
+                # At bottom (d = tube_length) -> ball_height = 0 (PV ~ 0%)
                 ball_height_cm = max(0.0, min(self.tube_length_cm, self.tube_length_cm - distance_cm))
             else:
+                # Bottom sensor pointing up:
                 ball_height_cm = max(0.0, min(self.tube_length_cm, distance_cm))
 
             self.last_valid_pv = float((ball_height_cm / self.tube_length_cm) * 100.0)
+        else:
+            self.consecutive_misses += 1
+            if self.consecutive_misses % 20 == 0:
+                logger.warning(
+                    "HC-SR04: %d consecutive missed pings (last reading: %.1f cm)",
+                    self.consecutive_misses,
+                    distance_cm,
+                )
 
         if logger.isEnabledFor(logging.DEBUG) or int(time.time() * 2) % 10 == 0:
-            logger.debug(
-                "HC-SR04: dist=%.1f cm, duration=%.2f ms, pv=%.1f%%",
+            logger.info(
+                "HC-SR04: dist=%.1f cm, pv=%.1f%% (mount=%s, misses=%d)",
                 distance_cm,
-                duration * 1000.0,
                 self.last_valid_pv,
+                "TOP" if self.sensor_at_top else "BOTTOM",
+                self.consecutive_misses,
             )
 
         return self.last_valid_pv
@@ -321,7 +341,7 @@ def parse_args() -> argparse.Namespace:
         "--sensor-at-top",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Whether the ultrasonic sensor is top-mounted (True) or bottom-mounted (False).",
+        help="Whether the ultrasonic sensor is top-mounted pointing down (default: True).",
     )
     parser.add_argument(
         "--tube-length",
@@ -350,10 +370,11 @@ def main() -> None:
         plant = SimulatedPlant(tube_length_m=args.tube_length / 100.0)
 
     logger.info(
-        "Plant Service active | Mode: %s | Socket: %s:%d",
+        "Plant Service active | Mode: %s | Socket: %s:%d | Mount: %s",
         args.mode.upper(),
         args.host,
         args.port,
+        "TOP" if args.sensor_at_top else "BOTTOM",
     )
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
