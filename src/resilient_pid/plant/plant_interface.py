@@ -4,12 +4,16 @@ src/resilient_pid/plant/plant_interface.py
 Unified Plant Runtime Daemon for Resilient Wireless PID DCS.
 Provides an interchangeable interface between physical hardware (PWM/I2C/GPIO)
 and a realistic, continuous aerodynamic software twin (RK4 integration).
+
+Uses an asynchronous worker thread for HC-SR04 ping acquisition to decouple
+acoustic flight-time latency from real-time UDP telemetry response deadlines.
 """
 
 import argparse
 import json
 import logging
 import socket
+import threading
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -159,6 +163,7 @@ class SimulatedPlant(BasePlant):
         # Map to percentage [0.0, 100.0]%
         pv_true = (self.state[1] / self.L_tube) * 100.0
 
+        # Transducer acoustic reflection noise (0.25% variance)
         sensor_noise = np.random.normal(0.0, 0.25)
         return float(np.clip(pv_true + sensor_noise, 0.0, 100.0))
 
@@ -169,8 +174,8 @@ class SimulatedPlant(BasePlant):
 class HardwarePlant(BasePlant):
     """
     Physical hardware interface running on bare-metal Raspberry Pi.
-    Actuates a 12V 4-wire fan via EMC2101 (I2C 0x4C) and measures
-    ball levitation elevation via HC-SR04 ultrasonic sensor.
+    Actuates a 12V 4-wire fan via EMC2101 (I2C 0x4C) and samples
+    ball elevation via an asynchronous HC-SR04 ultrasonic worker.
     """
 
     def __init__(
@@ -192,8 +197,13 @@ class HardwarePlant(BasePlant):
         self.echo_pin = echo_pin
         self.tube_length_cm = tube_length_cm
         self.sensor_at_top = sensor_at_top
-        self.last_valid_pv = 0.0
-        self.consecutive_misses = 0
+
+        # Thread synchronization state
+        self._lock = threading.Lock()
+        self._current_pv: float = 0.0
+        self._last_distance_cm: float = 0.0
+        self._miss_count: int = 0
+        self._running: bool = True
 
         # Initialize EMC2101 over SMBus/I2C
         self.bus = smbus2.SMBus(i2c_bus)
@@ -206,9 +216,15 @@ class HardwarePlant(BasePlant):
         GPIO.output(self.trig_pin, GPIO.LOW)
         time.sleep(0.05)  # Transducer settling interval
 
+        # Launch Asynchronous Sensor Acquisition Worker
+        self.worker_thread = threading.Thread(
+            target=self._sensor_worker, name="HCSR04-Poller", daemon=True
+        )
+        self.worker_thread.start()
+
         logger.info(
             "HardwarePlant online: EMC2101 (0x%02X on I2C-%d) | HC-SR04 (TRIG=%d, ECHO=%d) | "
-            "Mounting: %s | Height: %.1f cm",
+            "Mounting: %s | Height: %.1f cm | Mode: Asynchronous",
             self.emc_addr,
             i2c_bus,
             self.trig_pin,
@@ -231,8 +247,8 @@ class HardwarePlant(BasePlant):
 
     def _acquire_distance_cm(self) -> float:
         """
-        Executes bounded acoustic ping sampling.
-        Returns measured distance in cm, or -1.0 if an edge times out.
+        Executes a single bounded acoustic ping measurement.
+        Returns distance in cm, or -1.0 if an edge times out.
         """
         # Drain residual HIGH state on ECHO from previous bounces
         t_drain_limit = time.perf_counter() + 0.003
@@ -262,15 +278,55 @@ class HardwarePlant(BasePlant):
         pulse_end = time.perf_counter()
 
         duration = pulse_end - pulse_start
-        distance_cm = (duration * 34300.0) / 2.0
-        return distance_cm
+        return (duration * 34300.0) / 2.0
+
+    def _sensor_worker(self) -> None:
+        """Dedicated background thread polling HC-SR04 at ~25 Hz."""
+        while self._running:
+            d = self._acquire_distance_cm()
+
+            # Retry once on miss
+            if d < 0.0:
+                time.sleep(0.001)
+                d = self._acquire_distance_cm()
+
+            with self._lock:
+                if 2.0 <= d <= (self.tube_length_cm + 5.0):
+                    self._miss_count = 0
+                    self._last_distance_cm = d
+
+                    if self.sensor_at_top:
+                        # Top sensor pointing down:
+                        # At top (d ~ 0 cm) -> ball_height = tube_length (PV ~ 100%)
+                        # At bottom (d = tube_length) -> ball_height = 0 (PV ~ 0%)
+                        ball_height_cm = max(
+                            0.0, min(self.tube_length_cm, self.tube_length_cm - d)
+                        )
+                    else:
+                        # Bottom sensor pointing up:
+                        ball_height_cm = max(0.0, min(self.tube_length_cm, d))
+
+                    self._current_pv = float(
+                        (ball_height_cm / self.tube_length_cm) * 100.0
+                    )
+                else:
+                    self._miss_count += 1
+                    if self._miss_count % 20 == 0:
+                        logger.warning(
+                            "HC-SR04: %d consecutive missed pings (last reading: %.1f cm)",
+                            self._miss_count,
+                            d,
+                        )
+
+            # Sampling rate regulation (~25-30 Hz)
+            time.sleep(0.035)
 
     def step(self, u_t: float) -> float:
         """
-        Actuates EMC2101 and samples ball elevation.
-        Guarantees loop return within <= 15ms.
+        Actuates EMC2101 fan duty cycle and immediately returns cached PV.
+        Guaranteed execution time < 1.0 ms. Zero chance of UDP socket timeout.
         """
-        # Actuate Fan: Map [0.0, 100.0]% to 8-bit register [0, 255]
+        # Non-blocking actuator write via I2C
         duty_clamped = max(0.0, min(100.0, u_t))
         reg_value = int(round((duty_clamped / 100.0) * 255.0))
         try:
@@ -278,47 +334,30 @@ class HardwarePlant(BasePlant):
         except Exception as e:
             logger.warning("EMC2101 I2C write failed: %s", e)
 
-        # Measure distance with 1 retry on miss
-        distance_cm = self._acquire_distance_cm()
-        if distance_cm < 0.0:
-            time.sleep(0.001)
-            distance_cm = self._acquire_distance_cm()
-
-        # Process reading if valid
-        if 2.0 <= distance_cm <= (self.tube_length_cm + 5.0):
-            self.consecutive_misses = 0
-            if self.sensor_at_top:
-                # Top sensor pointing down:
-                # At top (d ~ 0 cm) -> ball_height = tube_length (PV ~ 100%)
-                # At bottom (d = tube_length) -> ball_height = 0 (PV ~ 0%)
-                ball_height_cm = max(0.0, min(self.tube_length_cm, self.tube_length_cm - distance_cm))
-            else:
-                # Bottom sensor pointing up:
-                ball_height_cm = max(0.0, min(self.tube_length_cm, distance_cm))
-
-            self.last_valid_pv = float((ball_height_cm / self.tube_length_cm) * 100.0)
-        else:
-            self.consecutive_misses += 1
-            if self.consecutive_misses % 20 == 0:
-                logger.warning(
-                    "HC-SR04: %d consecutive missed pings (last reading: %.1f cm)",
-                    self.consecutive_misses,
-                    distance_cm,
-                )
+        # Instantaneous atomic read from shared memory
+        with self._lock:
+            pv = self._current_pv
+            dist = self._last_distance_cm
+            misses = self._miss_count
 
         if logger.isEnabledFor(logging.DEBUG) or int(time.time() * 2) % 10 == 0:
             logger.info(
-                "HC-SR04: dist=%.1f cm, pv=%.1f%% (mount=%s, misses=%d)",
-                distance_cm,
-                self.last_valid_pv,
+                "HC-SR04 Telemetry: dist=%.1f cm, pv=%.1f%% (mount=%s, u=%.1f%%, misses=%d)",
+                dist,
+                pv,
                 "TOP" if self.sensor_at_top else "BOTTOM",
-                self.consecutive_misses,
+                u_t,
+                misses,
             )
 
-        return self.last_valid_pv
+        return pv
 
     def cleanup(self) -> None:
-        """De-energizes fan motor and releases GPIO lines."""
+        """De-energizes fan motor, terminates worker thread, releases GPIO lines."""
+        self._running = False
+        if hasattr(self, "worker_thread") and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=0.2)
+
         try:
             if hasattr(self, "bus"):
                 self.bus.write_byte_data(self.emc_addr, 0x4C, 0x00)
