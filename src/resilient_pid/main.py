@@ -365,7 +365,7 @@ class ControllerRuntime:
                     OSError,
                     ConnectionRefusedError,
                     json.JSONDecodeError,
-                    KeyError
+                    KeyError,
                 ) as exc:
                     logger.debug("Telemetry drop (tick %d): %s", self.seq_num, exc)
                     is_loss = True
