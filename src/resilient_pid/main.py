@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Dict, Protocol
+from typing import Any, Protocol
 
 import requests
 
@@ -121,7 +121,7 @@ def wait_for_c2_ready(
     return False
 
 
-def push_c2_configuration(port: int, payload: Dict[str, Any]) -> bool:
+def push_c2_configuration(port: int, payload: dict[str, Any]) -> bool:
     """Transmits startup configuration payload to C2 REST endpoint."""
     if not wait_for_c2_ready(port, timeout=8.0):
         logger.warning("C2 server failed to bind port %d within timeout window.", port)
@@ -362,14 +362,7 @@ class ControllerRuntime:
                             is_loss = True
                     else:
                         is_loss = True
-                except (
-                    socket.timeout,
-                    TimeoutError,
-                    OSError,
-                    ConnectionRefusedError,
-                    json.JSONDecodeError,
-                    KeyError,
-                ) as exc:
+                except (TimeoutError, OSError, ConnectionRefusedError, json.JSONDecodeError, KeyError) as exc:
                     logger.debug("Telemetry drop (tick %d): %s", self.seq_num, exc)
                     is_loss = True
                     rtt_ms = None
