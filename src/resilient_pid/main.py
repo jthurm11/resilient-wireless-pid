@@ -321,9 +321,7 @@ class ControllerRuntime:
                 dt = self.dt
                 trial = self.trial_id
 
-            controller = self.controllers.get(
-                active_mode, self.controllers["baseline"]
-            )
+            controller = self.controllers.get(active_mode, self.controllers["baseline"])
             is_loss = False
             rtt_ms = None
             current_pv = self.last_known_pv
@@ -362,7 +360,13 @@ class ControllerRuntime:
                             is_loss = True
                     else:
                         is_loss = True
-                except (TimeoutError, OSError, ConnectionRefusedError, json.JSONDecodeError, KeyError) as exc:
+                except (
+                    TimeoutError,
+                    OSError,
+                    ConnectionRefusedError,
+                    json.JSONDecodeError,
+                    KeyError
+                ) as exc:
                     logger.debug("Telemetry drop (tick %d): %s", self.seq_num, exc)
                     is_loss = True
                     rtt_ms = None
