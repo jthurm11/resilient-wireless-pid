@@ -328,7 +328,7 @@ class HardwarePlant(BasePlant):
         """
         # Non-blocking actuator write via I2C
         duty_clamped = max(0.0, min(100.0, u_t))
-        reg_value = int(round((duty_clamped / 100.0) * 255.0))
+        reg_value = int(round((duty_clamped / 100.0) * 63.0))
         try:
             self.bus.write_byte_data(self.emc_addr, 0x4C, reg_value)
         except Exception as e:
