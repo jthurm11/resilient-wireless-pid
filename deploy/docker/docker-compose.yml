@@ -1,6 +1,7 @@
 networks:
   dcs_net:
     driver: bridge
+    internal: true
     ipam:
       driver: default
       config:
@@ -8,9 +9,7 @@ networks:
           gateway: 10.10.10.254
 
 services:
-  # ============================================================================
   # NODE 1: dcs-ctrl-node (Shared Pod Namespace: 10.10.10.1)
-  # ============================================================================
   dcs-ctrl-node:
     build:
       context: ../../
@@ -87,9 +86,7 @@ services:
       - ../../:/opt/resilient-wireless-pid
     command: run-controller --enable-ui
 
-  # ============================================================================
   # NODE 2: dcs-plant-node (Independent Namespace: 10.10.10.2)
-  # ============================================================================
   dcs-plant-node:
     build:
       context: ../../

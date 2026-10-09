@@ -195,25 +195,43 @@ pve_configure_kernel() {
 }
 
 pve_configure_network() {
-  # Configures isolated Linux bridge vmbr1 for inter-node control datagrams.
-  msg_info "Verifying isolated DCS bridge (vmbr1)"
-  if ! grep -q "iface vmbr1" /etc/network/interfaces; then
+  # Configures isolated Linux bridge for inter-node control datagrams.
+  msg_info "Detecting or provisioning isolated DCS bridge"
+
+  local existing_bridge
+  existing_bridge=$(awk '/^iface vmbr/ { iface=$2 } /DCS traffic/ { print iface; exit }' /etc/network/interfaces)
+
+  if [ -n "$existing_bridge" ]; then
+    DCS_BRIDGE="$existing_bridge"
+    msg_ok "Found existing isolated DCS bridge: $DCS_BRIDGE"
+  else
+    local max_vmbr
+    max_vmbr=$(grep -oP '^iface vmbr\K\d+' /etc/network/interfaces | sort -nr | head -n 1)
+
+    # Handle edge case where no vmbr interfaces exist
+    if [ -z "$max_vmbr" ]; then
+       max_vmbr=-1
+    fi
+
+    # Calculate next available bridge ID
+    DCS_BRIDGE="vmbr$((max_vmbr + 1))"
+
     cat <<EOF >> /etc/network/interfaces
 
-auto vmbr1
-iface vmbr1 inet manual
+auto $DCS_BRIDGE
+iface $DCS_BRIDGE inet manual
         bridge-ports none
         bridge-stp off
         bridge-fd 0
+# Internal testing bridge for DCS traffic
 EOF
+
     if command -v ifreload >/dev/null 2>&1; then
       ifreload -a
     else
       systemctl restart networking
     fi
-    msg_ok "Created bridge vmbr1"
-  else
-    msg_ok "Bridge vmbr1 present"
+    msg_ok "Created bridge $DCS_BRIDGE"
   fi
 }
 
@@ -254,7 +272,7 @@ pve_create_container() {
     --swap 512 \
     --features nesting=1,keyctl=1 \
     --net0 name=eth0,bridge=vmbr0,ip=dhcp \
-    --net1 name=wlan0,bridge=vmbr1,ip="${internal_ip}/24" \
+    --net1 name=wlan0,bridge=${DCS_BRIDGE},ip="${internal_ip}/24" \
     --storage "$STORAGE" \
     --rootfs volume="${STORAGE}:8" \
     --unprivileged 0 >/dev/null 2>&1
