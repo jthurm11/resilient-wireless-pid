@@ -47,9 +47,26 @@ jobs:
   docker-build-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Set up QEMU and Buildx (required for advanced caching features)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build container utilizing GitHub Actions Cache
       - name: Verify Docker Container Build
-        run: docker build -t resilient-pid-test -f deploy/docker/Dockerfile .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          tags: resilient-pid-test:latest
+          push: false                         # Only tests the build, doesn't push
+          cache-from: type=gha                # Pulls layers from GitHub cache
+          cache-to: type=gha,mode=max         # Saves layers to GitHub cache
 
   publish-release:
     needs: [static-analysis, unit-testing, docker-build-check]
