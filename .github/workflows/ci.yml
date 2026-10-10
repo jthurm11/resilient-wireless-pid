@@ -11,31 +11,60 @@ permissions:
   contents: write
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            docker:
+              - 'deploy/docker/**'
+              - 'Dockerfile'
+              - '.github/workflows/**'
+
   static-analysis:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Lint and Format Check (Ruff)
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: format --check src/
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Lint and Static Type Check
+          cache: 'pip'
+          
+      - name: Static Type Check (MyPy)
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff mypy types-requests
-          ruff check src/
-          ruff format --check src/
+          pip install mypy types-requests
           mypy src/resilient_pid/
 
   unit-testing:
     runs-on: ubuntu-latest
+    strategy:
+      # If one Python version fails, let the others finish running 
+      fail-fast: false 
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
+      
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+          
       - name: Run Test Suite
         run: |
           pip install --upgrade pip
@@ -45,32 +74,36 @@ jobs:
           pytest tests/test_pid_math.py -v
 
   docker-build-check:
+    needs: changes
+    if: ${{ needs.changes.outputs.docker == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # Set up QEMU and Buildx (required for advanced caching features)
+      - uses: actions/checkout@v4
+      
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build container utilizing GitHub Actions Cache
       - name: Verify Docker Container Build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/docker/Dockerfile
           tags: resilient-pid-test:latest
-          push: false                         # Only tests the build, doesn't push
-          cache-from: type=gha                # Pulls layers from GitHub cache
-          cache-to: type=gha,mode=max         # Saves layers to GitHub cache
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   publish-release:
-    needs: [static-analysis, unit-testing, docker-build-check]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [static-analysis, unit-testing, changes]
+    if: |
+      always() && 
+      startsWith(github.ref, 'refs/tags/v') &&
+      (needs.static-analysis.result == 'success') &&
+      (!contains(needs.unit-testing.result, 'failure')) &&
+      (!contains(needs.unit-testing.result, 'cancelled'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,10 +111,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
       - name: Build PEP 517 Wheel & Sdist
         run: |
           pip install --upgrade build
           python -m build
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
