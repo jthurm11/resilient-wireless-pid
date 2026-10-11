@@ -44,7 +44,7 @@ def postprocess_trial_dataframe(df: pd.DataFrame, default_env: str) -> pd.DataFr
 
     # Convert RFC-3339 timestamps and enforce monotonic order per trial
     if "_time" in df.columns:
-        df["_time"] = pd.to_datetime(df["_time"], utc=True)
+        df["_time"] = pd.to_datetime(df["_time"], utc=True, format="ISO8601")
         df = df.sort_values(by=["trial_id", "_time"]).reset_index(drop=True)
 
         # Compute relative elapsed seconds t_rel (t - t0) per trial
