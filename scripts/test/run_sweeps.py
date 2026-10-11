@@ -184,7 +184,7 @@ class SweepOrchestrator:
         time.sleep(1.5)  # Buffer flush allowance
         self.export_trial_csv(config.trial_id, config.export_filename)
 
-    def _generate_trial_matrix(self) -> list[TrialConfig]:
+    def _generate_trial_matrix(self, v1_dur: float, v2_dur: float, v3_dur: float) -> list[TrialConfig]:
         """Pre-computes the entire experimental execution queue."""
         trials = []
 
@@ -193,7 +193,7 @@ class SweepOrchestrator:
             for algo in ["baseline", "smith"]:
                 t_id = f"sweep_deadtime_{algo}_{rtt_ms}ms_rtt"
                 fname = f"control_law_comparison_{rtt_ms}ms_rtt.csv" if algo == "smith" else f"baseline_{rtt_ms}ms_rtt.csv"
-                trials.append(TrialConfig(t_id, algo, 50.0, ["delay", f"{rtt_ms // 2}ms"], 20.0, fname))
+                trials.append(TrialConfig(t_id, algo, 50.0, ["delay", f"{rtt_ms // 2}ms"], v1_dur, fname))
 
         # Vector 2: Jitter distributions
         jitter_profiles = [
@@ -203,29 +203,27 @@ class SweepOrchestrator:
         for name, args in jitter_profiles:
             for algo in ["baseline", "smith", "resilient"]:
                 t_id = f"sweep_jitter_{name}_{algo}"
-                trials.append(TrialConfig(t_id, algo, 50.0, args, 25.0, f"trial_jitter_{name}_{algo}.csv"))
+                trials.append(TrialConfig(t_id, algo, 50.0, args, v2_dur, f"trial_jitter_{name}_{algo}.csv"))
 
         # Vector 3: Burst loss profiles
         for loss_pct in [2, 5, 10, 15, 20]:
             for algo in ["baseline", "resilient"]:
                 t_id = f"sweep_burst_loss_{loss_pct}pct_{algo}"
-                trials.append(TrialConfig(t_id, algo, 50.0, ["loss", f"{loss_pct}%", "25%"], 25.0, f"burst_loss_{loss_pct}pct_{algo}.csv"))
+                trials.append(TrialConfig(t_id, algo, 50.0, ["loss", f"{loss_pct}%", "25%"], v3_dur, f"burst_loss_{loss_pct}pct_{algo}.csv"))
 
         return trials
 
-    def execute_matrix(self) -> None:
+    def execute_matrix(self, v1_dur: float, v2_dur: float, v3_dur: float) -> None:
         """Execute automated benchmark sweeps with dynamic progress and ETA tracking."""
-        trials = self._generate_trial_matrix()
+        trials = self._generate_trial_matrix(v1_dur, v2_dur, v3_dur)
         total_trials = len(trials)
         logger.info("Generated empirical sweep matrix: %d total trials scheduled.", total_trials)
 
         start_time = time.time()
         for idx, config in enumerate(trials, start=1):
             if idx == 1:
-                # Cold-start estimate based on configured static duration
                 eta_seconds = (config.duration_sec + 1.5) * total_trials
             else:
-                # Dynamic Simple Moving Average (SMA) of elapsed loop timing
                 elapsed = time.time() - start_time
                 avg_time_per_trial = elapsed / (idx - 1)
                 eta_seconds = avg_time_per_trial * (total_trials - idx + 1)
@@ -233,8 +231,8 @@ class SweepOrchestrator:
             eta_str = time.strftime("%H:%M:%S", time.gmtime(eta_seconds))
 
             logger.info(
-                "--- Launching Trial [%d/%d] | ETA: %s | ID: %s (%s) ---",
-                idx, total_trials, eta_str, config.trial_id, config.algorithm
+                "--- Launching Trial [%d/%d] | ETA: %s | ID: %s (%s) | Duration: %.1fs ---",
+                idx, total_trials, eta_str, config.trial_id, config.algorithm, config.duration_sec
             )
             self.run_trial(config)
 
@@ -273,6 +271,23 @@ def parse_args() -> argparse.Namespace:
         "--c2-url", type=str, default="http://127.0.0.1:5050",
         help="Supervisory C2 REST API endpoint"
     )
+    # Dynamic duration controls
+    parser.add_argument(
+        "--duration", type=float, default=None,
+        help="Global trial duration override in seconds across all vectors"
+    )
+    parser.add_argument(
+        "--v1-duration", type=float, default=30.0,
+        help="Duration for Vector 1 dead-time trials (default: 30.0s)"
+    )
+    parser.add_argument(
+        "--v2-duration", type=float, default=35.0,
+        help="Duration for Vector 2 jitter trials (default: 35.0s)"
+    )
+    parser.add_argument(
+        "--v3-duration", type=float, default=35.0,
+        help="Duration for Vector 3 burst loss trials (default: 35.0s)"
+    )
     return parser.parse_args()
 
 
@@ -280,11 +295,29 @@ def main() -> None:
     args = parse_args()
     orchestrator = SweepOrchestrator(interface=args.interface, c2_url=args.c2_url)
 
+    # If --duration is specified, it strictly overrides all vector configurations.
+    if args.duration is not None:
+        v1_dur = args.duration
+        v2_dur = args.duration
+        v3_dur = args.duration
+        logger.info(
+            "Global duration override active: All vectors configured for %.1f seconds.",
+            args.duration
+        )
+    else:
+        v1_dur = args.v1_duration
+        v2_dur = args.v2_duration
+        v3_dur = args.v3_duration
+        logger.info(
+            "Per-vector durations active -> Vector 1: %.1fs | Vector 2: %.1fs | Vector 3: %.1fs",
+            v1_dur, v2_dur, v3_dur
+        )
+
     logger.info("Starting automated parameter sweeps on interface %s", args.interface)
 
     sweep_completed_successfully = False
     try:
-        orchestrator.execute_matrix()
+        orchestrator.execute_matrix(v1_dur=v1_dur, v2_dur=v2_dur, v3_dur=v3_dur)
         sweep_completed_successfully = True
     except KeyboardInterrupt:
         logger.warning("Interrupted by operator; cleaning up qdisc rules...")
