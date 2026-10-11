@@ -187,7 +187,7 @@ sync_docker() {
   # Synchronizes host repository and rebuilds Docker Compose stack.
   echo -e "${BOLD}Synchronizing Docker Environment to '${TARGET_BRANCH}'...${CL}"
   cd "$REPO_ROOT" || msg_error "Repository root not found."
-  
+
   msg_info "Fetching and checking out ${TARGET_BRANCH}"
   git fetch origin >/dev/null 2>&1
   git checkout "$TARGET_BRANCH" >/dev/null 2>&1
@@ -492,13 +492,14 @@ destroy_lxc() {
 status_lxc() {
   # Lists active mock containers registered on Proxmox host.
   echo -e "${BOLD}Proxmox LXC Testbed Status:${CL}\n"
-  pct list | grep -E "201|202" || echo "No active mock containers found."
+  pct list | grep -E "201|202" && echo || echo "No active mock containers found."
+  pct exec 201 -- bash -c "/opt/resilient-wireless-pid/scripts/infra/telemetry_stack.sh status --no-header"
 }
 
 sync_lxc() {
   # Synchronizes host and LXC containers, reinstalls dependencies, and restarts services.
   echo -e "${BOLD}Synchronizing LXC Environment to '${TARGET_BRANCH}'...${CL}"
-  
+
   msg_info "Synchronizing host workspace to '${TARGET_BRANCH}'"
   cd "$TARGET_DIR" 2>/dev/null || cd "$REPO_ROOT"
   git fetch origin >/dev/null 2>&1
