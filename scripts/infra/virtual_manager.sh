@@ -20,6 +20,7 @@ COMPOSE_FILE="${REPO_ROOT}/deploy/docker/docker-compose.yml"
 SHOW_HEADER=true
 TARGET=""
 ACTION=""
+TARGET_BRANCH="main"
 
 header_info() {
   if [ "$SHOW_HEADER" = false ]; then return; fi
@@ -43,6 +44,7 @@ Commands:
   create          Build and deploy multi-node testbed containers and networks
   destroy         Purge testbed containers, bridges, and virtual volumes
   status          Interrogate running testbed node health and interfaces
+  sync            Synchronize local workspace with upstream changes
 
 Positional Arguments:
   backend         Target runtime: 'docker' or 'lxc' (autodetected if omitted)
@@ -73,11 +75,19 @@ parse_cli_arguments() {
       docker|lxc)
         TARGET="$arg"
         ;;
-      create|destroy|status)
+      create|destroy|status|sync)
         ACTION="$arg"
         ;;
-      *)
+      -*)
         msg_error "Unknown argument: '$arg'. Run '$0 --help' for usage."
+        ;;
+      *)
+        # Assign unmatched positional arguments to branch if syncing
+        if [ "$ACTION" == "sync" ]; then
+            TARGET_BRANCH="${arg:-main}"
+        else
+            msg_error "Unknown argument: '$arg'. Run '$0 --help' for usage."
+        fi
         ;;
     esac
   done
@@ -171,6 +181,22 @@ status_docker() {
   # Queries process status of running Docker Compose services.
   echo -e "${BOLD}Docker Infrastructure Status:${CL}\n"
   docker compose -f "$COMPOSE_FILE" ps
+}
+
+sync_docker() {
+  # Synchronizes host repository and rebuilds Docker Compose stack.
+  echo -e "${BOLD}Synchronizing Docker Environment to '${TARGET_BRANCH}'...${CL}"
+  cd "$REPO_ROOT" || msg_error "Repository root not found."
+  
+  msg_info "Fetching and checking out ${TARGET_BRANCH}"
+  git fetch origin >/dev/null 2>&1
+  git checkout "$TARGET_BRANCH" >/dev/null 2>&1
+  git pull origin "$TARGET_BRANCH" >/dev/null 2>&1
+  msg_ok "Host repository synchronized"
+
+  msg_info "Rebuilding Docker containers"
+  docker compose -f "$COMPOSE_FILE" up -d --build >/dev/null 2>&1
+  msg_ok "Docker stack rebuilt and active"
 }
 
 pve_check_storage() {
@@ -290,7 +316,7 @@ pve_install_base_pkgs() {
   pct exec "$ctid" -- bash -c "export DEBIAN_FRONTEND=noninteractive && \
     apt-get update -y >/dev/null && \
     apt-get install -y --no-install-recommends \
-      iproute2 iperf3 iputils-ping python3 python3-pip python3-venv \
+      iproute2 iperf3 iputils-ping python3 python3-pip python3-venv rsync \
       build-essential git curl ca-certificates gnupg >/dev/null 2>&1"
   msg_ok "Toolchains ready on CT ${ctid}"
 }
@@ -469,6 +495,43 @@ status_lxc() {
   pct list | grep -E "201|202" || echo "No active mock containers found."
 }
 
+sync_lxc() {
+  # Synchronizes host and LXC containers, reinstalls dependencies, and restarts services.
+  echo -e "${BOLD}Synchronizing LXC Environment to '${TARGET_BRANCH}'...${CL}"
+  
+  msg_info "Synchronizing host workspace to '${TARGET_BRANCH}'"
+  cd "$TARGET_DIR" 2>/dev/null || cd "$REPO_ROOT"
+  git fetch origin >/dev/null 2>&1
+  git checkout "$TARGET_BRANCH" >/dev/null 2>&1
+  git pull origin "$TARGET_BRANCH" >/dev/null 2>&1
+  msg_ok "Host workspace synchronized"
+
+  for ctid in 201 202; do
+    if pct status "$ctid" 2>/dev/null | grep -q "running"; then
+      msg_info "Synchronizing CT ${ctid}"
+      pct exec "$ctid" -- bash -c "
+        cd /opt/resilient-wireless-pid
+        git fetch origin
+        git checkout ${TARGET_BRANCH}
+        git pull origin ${TARGET_BRANCH}
+        source .venv/bin/activate
+        pip install -e . --no-deps
+      " >/dev/null 2>&1
+      msg_ok "CT ${ctid} code updated"
+      
+      if [ "$ctid" -eq 201 ]; then
+        pct exec 201 -- bash -c "
+          systemctl restart dcs-controller.service
+          cd /opt/resilient-wireless-pid && ./scripts/infra/telemetry_stack.sh create --no-header
+        "
+      else
+        pct exec 202 -- systemctl restart dcs-plant.service
+      fi
+      msg_ok "CT ${ctid} daemons reloaded"
+    fi
+  done
+}
+
 parse_cli_arguments "$@"
 header_info
 
@@ -480,7 +543,9 @@ case "${TARGET}:${ACTION}" in
   docker:create)  create_docker ;;
   docker:destroy) destroy_docker ;;
   docker:status)  status_docker ;;
+  docker:sync)    sync_docker ;;
   lxc:create)     create_lxc ;;
   lxc:destroy)    destroy_lxc ;;
   lxc:status)     status_lxc ;;
+  lxc:sync)       sync_lxc ;;
 esac
