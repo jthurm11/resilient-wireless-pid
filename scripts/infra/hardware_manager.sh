@@ -28,6 +28,7 @@ SHOW_HEADER=true
 ENABLE_LED_MONITOR=false
 TARGET_ROLE=""
 ACTION=""
+TARGET_BRANCH="main"
 
 header_info() {
   if [ "$SHOW_HEADER" = false ]; then return; fi
@@ -51,6 +52,7 @@ Commands:
   create                Configure host networking, dependencies, and systemd units
   destroy               Purge services, revert hostname, and remove network aliases
   status                Interrogate node interfaces, peripheral buses, and services
+  sync                  Synchronize local workspace with upstream changes
 
 Positional Arguments:
   role                  Node operational target: 'ctrl' (10.10.10.1) or 'plant' (10.10.10.2)
@@ -93,11 +95,17 @@ parse_cli_arguments() {
       ctrl|plant)
         TARGET_ROLE="$arg"
         ;;
-      create|destroy|status)
+      create|destroy|status|sync)
         ACTION="$arg"
         ;;
       *)
-        msg_error "Unknown argument: '$arg'. Run '$0 --help' for usage."
+        if [ -z "$TARGET_ROLE" ] && [[ "$arg" =~ ^(ctrl|plant)$ ]]; then
+          TARGET_ROLE="$arg"
+        elif [ "$ACTION" == "sync" ]; then
+          TARGET_BRANCH="${arg:-main}"
+        else
+          msg_error "Unknown argument: '$arg'. Run '$0 --help' for usage."
+        fi
         ;;
     esac
   done
@@ -379,7 +387,7 @@ EOF
 provision_workspace() {
   # Installs system packages conditionally per role and prepares the virtualenv.
   local role="$1"
-  local base_pkgs=("python3-pip" "python3-venv" "iproute2")
+  local base_pkgs=("python3-pip" "python3-venv" "iproute2" "rsync")
 
   if [ "$role" == "plant" ]; then
     # Hardware Plant requires SMBus (I2C) and the RPi.GPIO character shim
@@ -580,6 +588,38 @@ action_status() {
   echo ""
 }
 
+action_sync() {
+  # Synchronizes the bare-metal repository, reinstalls package, and restarts services[cite: 3].
+  local role="$TARGET_ROLE"
+  local unit_name="dcs-${role}.service"
+  [ "$role" == "ctrl" ] && unit_name="dcs-controller.service"
+  [ "$role" == "plant" ] && unit_name="dcs-plant.service"
+
+  echo -e "${BOLD}Synchronizing Node [Role: ${role^^}] to '${TARGET_BRANCH}'...${CL}"
+  check_execution_environment
+  
+  msg_info "Pulling latest changes for ${TARGET_BRANCH}"
+  cd "$REPO_ROOT" || msg_error "Repository workspace not found at ${REPO_ROOT}"
+  git fetch origin >/dev/null 2>&1
+  git checkout "$TARGET_BRANCH" >/dev/null 2>&1
+  git pull origin "$TARGET_BRANCH" >/dev/null 2>&1
+  msg_ok "Repository synchronized"
+
+  msg_info "Updating Python environment"
+  source .venv/bin/activate
+  pip install -e . --no-deps >/dev/null 2>&1
+  msg_ok "Virtual environment updated"
+
+  msg_info "Restarting ${unit_name}"
+  systemctl restart "$unit_name" >/dev/null 2>&1
+  
+  if [ "$role" == "ctrl" ]; then
+    bash "${REPO_ROOT}/scripts/infra/telemetry_stack.sh" create --no-header >/dev/null 2>&1 || true
+    msg_ok "Telemetry stack restarted"
+  fi
+  msg_ok "Real-time service reloaded"
+}
+
 # Entrypoint Router: Parse CLI flags first, then print banner if enabled
 parse_cli_arguments "$@"
 header_info
@@ -588,4 +628,5 @@ case "$ACTION" in
   create)  action_create ;;
   destroy) action_destroy ;;
   status)  action_status ;;
+  sync)    action_sync ;;
 esac

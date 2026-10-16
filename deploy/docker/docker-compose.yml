@@ -1,7 +1,6 @@
 networks:
   dcs_net:
     driver: bridge
-    internal: true
     ipam:
       driver: default
       config:

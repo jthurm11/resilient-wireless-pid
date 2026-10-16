@@ -11,8 +11,7 @@ import argparse
 import glob
 import logging
 import os
-from typing import Dict, List, Optional
-import numpy as np
+
 import pandas as pd
 
 logging.basicConfig(
@@ -45,7 +44,7 @@ def postprocess_trial_dataframe(df: pd.DataFrame, default_env: str) -> pd.DataFr
 
     # Convert RFC-3339 timestamps and enforce monotonic order per trial
     if "_time" in df.columns:
-        df["_time"] = pd.to_datetime(df["_time"], utc=True)
+        df["_time"] = pd.to_datetime(df["_time"], utc=True, format="ISO8601")
         df = df.sort_values(by=["trial_id", "_time"]).reset_index(drop=True)
 
         # Compute relative elapsed seconds t_rel (t - t0) per trial
@@ -89,7 +88,7 @@ def postprocess_trial_dataframe(df: pd.DataFrame, default_env: str) -> pd.DataFr
     return df[ordered_cols]
 
 
-def infer_execution_timestamp(dfs: List[pd.DataFrame], files: List[str]) -> str:
+def infer_execution_timestamp(dfs: list[pd.DataFrame], files: list[str]) -> str:
     """
     Infer run timestamp from the earliest recorded telemetry sample.
     Falls back to the oldest file modification time if _time is unavailable.
@@ -119,8 +118,8 @@ def process_exports(
     raw_dir: str,
     output_dir: str,
     environment: str,
-    override_timestamp: Optional[str] = None,
-) -> Dict[str, str]:
+    override_timestamp: str | None = None,
+) -> dict[str, str]:
     """Aggregate raw trial CSV files into vector-partitioned research datasets."""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -140,7 +139,7 @@ def process_exports(
     generated_files = {}
 
     for vector_name, patterns in vector_manifest.items():
-        matched_files: List[str] = []
+        matched_files: list[str] = []
         for p in patterns:
             matched_files.extend(glob.glob(p))
         matched_files = sorted(list(set(matched_files)))
@@ -180,13 +179,13 @@ def main():
     parser.add_argument(
         "--raw-dir",
         type=str,
-        default="data_exports",
+        default="/opt/resilient-wireless-pid/data_exports",
         help="Source directory containing raw InfluxDB trial CSV exports",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="data_exports/processed",
+        default="/opt/resilient-wireless-pid/data_exports/processed",
         help="Destination directory for processed vector datasets",
     )
     parser.add_argument(

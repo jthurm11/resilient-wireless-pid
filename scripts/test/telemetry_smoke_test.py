@@ -3,9 +3,10 @@
 scripts/test/test_telemetry_pipeline.py
 Synthetic smoke test to validate InfluxDB v2 line protocol ingestion.
 """
+import math
 import os
 import time
-import math
+
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
@@ -29,7 +30,7 @@ print(f"Streaming {steps} synthetic steps for {trial_id}...")
 for k in range(steps):
     t_start = time.perf_counter()
     t = k * dt
-    
+
     # Synthetic damped response: y(t) = SP * (1 - e^(-1.5t) * cos(3t))
     pv = setpoint * (1.0 - math.exp(-1.5 * t) * math.cos(3.0 * t))
     error = setpoint - pv
@@ -47,9 +48,9 @@ for k in range(steps):
         .field("rtt", float(rtt))
         .time(time.time_ns(), WritePrecision.NS)
     )
-    
+
     write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
-    
+
     elapsed = time.perf_counter() - t_start
     sleep_time = max(0.0, dt - elapsed)
     time.sleep(sleep_time)
