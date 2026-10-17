@@ -566,17 +566,18 @@ action_status() {
   echo -e "${TAB}${BOLD}Host System:${CL}          $(hostname) ($(uname -m))"
   
   local ip_configured
-  ip_configured="$(ip -4 addr show dev "$iface" | grep -oE "10\.10\.10\.[12]" || echo "NONE")"
+  ip_configured="$(ip -4 -o addr show dev "$iface" | awk '$4 ~ /^10\.10\.10\.[12]\// {split($4, a, "/"); print a[1]}')"
+  ip_configured="${ip_configured:-NONE}"
   echo -e "${TAB}${BOLD}DCS Secondary IP:${CL}     ${ip_configured} on ${iface}"
 
   if [ -n "$unit" ]; then
     local status_line
-    status_line="$(systemctl is-active "$unit" 2>/dev/null || echo "inactive")"
+    status_line="$(systemctl is-active "$unit" 2>/dev/null"
     echo -e "${TAB}${BOLD}Runtime Daemon:${CL}       ${unit} (${status_line})"
   fi
 
   local led_status
-  led_status="$(systemctl is-active dcs-led-monitor.service 2>/dev/null || echo "not installed/inactive")"
+  led_status="$(systemctl is-active dcs-led-monitor.service 2>/dev/null"
   echo -e "${TAB}${BOLD}Diagnostic Supervisor:${CL} dcs-led-monitor.service (${led_status})"
 
   if command -v i2cdetect >/dev/null 2>&1; then
