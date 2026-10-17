@@ -234,7 +234,9 @@ class ControllerRuntime:
             else:
                 self._socket.setblocking(True)
         if drained_count > 0:
-            logger.info("Purged %d stale frame(s) from kernel UDP queue.", drained_count)
+            logger.info(
+                "Purged %d stale frame(s) from kernel UDP queue.", drained_count
+            )
 
     def _sync_initial_c2_state(self) -> None:
         """Query C2 synchronously once prior to loop boot to avoid tag desync."""

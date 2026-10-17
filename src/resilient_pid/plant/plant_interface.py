@@ -405,7 +405,9 @@ class HardwarePlant(BasePlant):
             if hasattr(self, "bus") and self.bus is not None:
                 self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SETTING, 0x00)
                 self.bus.close()
-                logger.info("EMC2101 fan duty cycle zeroed (0x00) and SMBus handle closed.")
+                logger.info(
+                    "EMC2101 fan duty cycle zeroed (0x00) and SMBus handle closed."
+                )
         except Exception as e:
             logger.error("Failed to zero fan actuator during teardown: %s", e)
 
@@ -497,7 +499,9 @@ def run_op_test(
             plant.tube_length_cm,
         )
     else:
-        logger.info("Geometry Verified: Baseline measurement conforms to physical column calibration.")
+        logger.info(
+            "Geometry Verified: Baseline measurement conforms to physical column calibration."
+        )
 
     logger.info("=================================================================")
     logger.info("PHASE 1: Open-Loop Fan Step Sweep & Ball Aerodynamics Evaluation")
@@ -509,7 +513,10 @@ def run_op_test(
 
     for target_pwm in test_levels:
         plant.set_fan_pwm(target_pwm)
-        logger.info("Commanded Duty: %5.1f%% | Allowing pneumatic stabilization (1.8s)...", target_pwm)
+        logger.info(
+            "Commanded Duty: %5.1f%% | Allowing pneumatic stabilization (1.8s)...",
+            target_pwm,
+        )
         time.sleep(1.8)
 
         # Collect synchronized window of tachometer and acoustic position data
@@ -529,7 +536,9 @@ def run_op_test(
         avg_dist = float(np.mean(dist_samples)) if dist_samples else 0.0
         delta_lift_cm = baseline_dist_cm - avg_dist
 
-        tach_str = f"{avg_rpm:6.1f} RPM" if avg_rpm > 0.0 else "N/A (Zero Tach Feedback)"
+        tach_str = (
+            f"{avg_rpm:6.1f} RPM" if avg_rpm > 0.0 else "N/A (Zero Tach Feedback)"
+        )
         logger.info(
             "Output: Command: %5.1f%% | PV: %5.1f%% | Dist: %5.1f cm (Lift: %+5.1f cm) | TACH: %s",
             target_pwm,
@@ -571,14 +580,22 @@ def run_op_test(
                 return
             else:
                 logger.warning(
-                    "Zero TACH reading ignored at %.1f%% PWM due to --ignore-tach.", target_pwm
+                    "Zero TACH reading ignored at %.1f%% PWM due to --ignore-tach.",
+                    target_pwm,
                 )
 
-    logger.info("PHASE 1 COMPLETE: Actuation sweep and physical aerodynamic response confirmed.")
+    logger.info(
+        "PHASE 1 COMPLETE: Actuation sweep and physical aerodynamic response confirmed."
+    )
 
     logger.info("=================================================================")
     logger.info("PHASE 2: Remote Control Node Message Reaction Test")
-    logger.info("Binding UDP %s:%d to process %d incoming controller datagrams...", host, port, max_frames)
+    logger.info(
+        "Binding UDP %s:%d to process %d incoming controller datagrams...",
+        host,
+        port,
+        max_frames,
+    )
     logger.info("=================================================================")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -628,15 +645,22 @@ def run_op_test(
                 received += 1
 
             except TimeoutError:
-                logger.error("Socket timeout (>6s). No datagrams received from control node.")
+                logger.error(
+                    "Socket timeout (>6s). No datagrams received from control node."
+                )
                 return
     finally:
         sock.close()
 
-    logger.info("PHASE 2 COMPLETE: Successfully handled %d closed-loop controller frames.", received)
+    logger.info(
+        "PHASE 2 COMPLETE: Successfully handled %d closed-loop controller frames.",
+        received,
+    )
 
 
-def run_cycle_test(plant: HardwarePlant, cycles: int = 5, step_interval: float = 3.0) -> None:
+def run_cycle_test(
+    plant: HardwarePlant, cycles: int = 5, step_interval: float = 3.0
+) -> None:
     """Cycles the fan through step profiles to test mechanical repeatability."""
     logger.info("=================================================================")
     logger.info("Executing Continuous Mechanical Cycle Test (%d iterations)", cycles)
@@ -720,7 +744,9 @@ def main() -> None:
     plant: BasePlant
     if args.mode == "hardware":
         if not HARDWARE_AVAILABLE:
-            logger.error("Physical drivers unavailable. Falling back to simulated twin.")
+            logger.error(
+                "Physical drivers unavailable. Falling back to simulated twin."
+            )
             plant = SimulatedPlant(tube_length_m=args.tube_length / 100.0)
         else:
             plant = HardwarePlant(
@@ -774,7 +800,9 @@ def main() -> None:
     def _sig_handler(signum: int, _frame: Any) -> None:
         """Intercepts SIGTERM and SIGINT to cleanly unwind the primary UDP thread."""
         sig_name = signal.Signals(signum).name
-        logger.info("Signal %s (%d) caught. Unwinding main runtime loop...", sig_name, signum)
+        logger.info(
+            "Signal %s (%d) caught. Unwinding main runtime loop...", sig_name, signum
+        )
         shutdown_requested.set()
         # Closing the socket forces sock.recvfrom(1024) to unblock immediately with an OSError
         try:

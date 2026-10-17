@@ -87,9 +87,7 @@ class DiscretePID:
         # Parallel form: u = Kp*e + I - Kd*(dPV/dt)
         # Note: Derivative acts with negative feedback against positive PV growth
         u_unclamped = (
-            (self.kp * error)
-            + self.integral
-            - (self.kd * self.filtered_derivative)
+            (self.kp * error) + self.integral - (self.kd * self.filtered_derivative)
         )
 
         # Output saturation

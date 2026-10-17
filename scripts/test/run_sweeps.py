@@ -26,6 +26,7 @@ logger = logging.getLogger("SweepOrchestrator")
 @dataclass
 class TrialConfig:
     """Deterministic configuration structure for an isolated parameter sweep trial."""
+
     trial_id: str
     algorithm: str
     setpoint: float
@@ -155,16 +156,24 @@ class SweepOrchestrator:
             target_path = os.path.join(self.data_export_dir, filename)
             if not df.empty:
                 preferred_cols = [
-                    "_time", "trial_id", "algorithm", "setpoint",
-                    "process_variable", "control_signal", "error",
-                    "rtt_ms", "is_loss"
+                    "_time",
+                    "trial_id",
+                    "algorithm",
+                    "setpoint",
+                    "process_variable",
+                    "control_signal",
+                    "error",
+                    "rtt_ms",
+                    "is_loss",
                 ]
                 existing_cols = [c for c in preferred_cols if c in df.columns]
                 export_df = df[existing_cols] if existing_cols else df
                 export_df.to_csv(target_path, index=False)
                 logger.info("Exported %d records to %s", len(export_df), target_path)
             else:
-                logger.warning("Empty result set for trial '%s'; skipping CSV export.", trial_id)
+                logger.warning(
+                    "Empty result set for trial '%s'; skipping CSV export.", trial_id
+                )
         except Exception as err:
             logger.error("Flux query failure for trial '%s': %s", trial_id, err)
 
@@ -172,7 +181,9 @@ class SweepOrchestrator:
         """Execute an isolated step response trial under target network conditions."""
         try:
             self.tc.apply_netem(config.netem_args)
-            if not self.set_c2_state(config.algorithm, config.setpoint, config.trial_id):
+            if not self.set_c2_state(
+                config.algorithm, config.setpoint, config.trial_id
+            ):
                 raise RuntimeError("C2 rejected control configuration.")
 
             time.sleep(config.duration_sec)
@@ -184,7 +195,9 @@ class SweepOrchestrator:
         time.sleep(1.5)  # Buffer flush allowance
         self.export_trial_csv(config.trial_id, config.export_filename)
 
-    def _generate_trial_matrix(self, v1_dur: float, v2_dur: float, v3_dur: float) -> list[TrialConfig]:
+    def _generate_trial_matrix(
+        self, v1_dur: float, v2_dur: float, v3_dur: float
+    ) -> list[TrialConfig]:
         """Pre-computes the entire experimental execution queue."""
         trials = []
 
@@ -192,8 +205,16 @@ class SweepOrchestrator:
         for rtt_ms in range(10, 110, 10):
             for algo in ["baseline", "smith"]:
                 t_id = f"sweep_deadtime_{algo}_{rtt_ms}ms_rtt"
-                fname = f"control_law_comparison_{rtt_ms}ms_rtt.csv" if algo == "smith" else f"baseline_{rtt_ms}ms_rtt.csv"
-                trials.append(TrialConfig(t_id, algo, 50.0, ["delay", f"{rtt_ms // 2}ms"], v1_dur, fname))
+                fname = (
+                    f"control_law_comparison_{rtt_ms}ms_rtt.csv"
+                    if algo == "smith"
+                    else f"baseline_{rtt_ms}ms_rtt.csv"
+                )
+                trials.append(
+                    TrialConfig(
+                        t_id, algo, 50.0, ["delay", f"{rtt_ms // 2}ms"], v1_dur, fname
+                    )
+                )
 
         # Vector 2: Jitter distributions
         jitter_profiles = [
@@ -203,13 +224,31 @@ class SweepOrchestrator:
         for name, args in jitter_profiles:
             for algo in ["baseline", "smith", "resilient"]:
                 t_id = f"sweep_jitter_{name}_{algo}"
-                trials.append(TrialConfig(t_id, algo, 50.0, args, v2_dur, f"trial_jitter_{name}_{algo}.csv"))
+                trials.append(
+                    TrialConfig(
+                        t_id,
+                        algo,
+                        50.0,
+                        args,
+                        v2_dur,
+                        f"trial_jitter_{name}_{algo}.csv",
+                    )
+                )
 
         # Vector 3: Burst loss profiles
         for loss_pct in [2, 5, 10, 15, 20]:
             for algo in ["baseline", "resilient"]:
                 t_id = f"sweep_burst_loss_{loss_pct}pct_{algo}"
-                trials.append(TrialConfig(t_id, algo, 50.0, ["loss", f"{loss_pct}%", "25%"], v3_dur, f"burst_loss_{loss_pct}pct_{algo}.csv"))
+                trials.append(
+                    TrialConfig(
+                        t_id,
+                        algo,
+                        50.0,
+                        ["loss", f"{loss_pct}%", "25%"],
+                        v3_dur,
+                        f"burst_loss_{loss_pct}pct_{algo}.csv",
+                    )
+                )
 
         return trials
 
@@ -217,7 +256,9 @@ class SweepOrchestrator:
         """Execute automated benchmark sweeps with dynamic progress and ETA tracking."""
         trials = self._generate_trial_matrix(v1_dur, v2_dur, v3_dur)
         total_trials = len(trials)
-        logger.info("Generated empirical sweep matrix: %d total trials scheduled.", total_trials)
+        logger.info(
+            "Generated empirical sweep matrix: %d total trials scheduled.", total_trials
+        )
 
         start_time = time.time()
         for idx, config in enumerate(trials, start=1):
@@ -232,7 +273,12 @@ class SweepOrchestrator:
 
             logger.info(
                 "--- Launching Trial [%d/%d] | ETA: %s | ID: %s (%s) | Duration: %.1fs ---",
-                idx, total_trials, eta_str, config.trial_id, config.algorithm, config.duration_sec
+                idx,
+                total_trials,
+                eta_str,
+                config.trial_id,
+                config.algorithm,
+                config.duration_sec,
             )
             self.run_trial(config)
 
@@ -240,53 +286,84 @@ class SweepOrchestrator:
 def prompt_and_execute_postprocessing() -> None:
     """Prompt the operator to trigger the data aggregation pipeline."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    postprocess_script = os.path.normpath(os.path.join(current_dir, "..", "analysis", "aggregate_and_postprocess.py"))
+    postprocess_script = os.path.normpath(
+        os.path.join(current_dir, "..", "analysis", "aggregate_and_postprocess.py")
+    )
 
     # Construct the manual fallback command
     # (Extracting a clean relative path for display purposes if run from repo root)
-    display_path = os.path.relpath(postprocess_script) if "resilient-wireless-pid" in current_dir else postprocess_script
+    display_path = (
+        os.path.relpath(postprocess_script)
+        if "resilient-wireless-pid" in current_dir
+        else postprocess_script
+    )
     manual_cmd = f"python3 {display_path}"
 
     try:
-        choice = input("\n[?] Sweep complete. Execute data aggregation and post-processing? (y/N): ").strip().lower()
-        if choice in ['y', 'yes']:
+        choice = (
+            input(
+                "\n[?] Sweep complete. Execute data aggregation and post-processing? (y/N): "
+            )
+            .strip()
+            .lower()
+        )
+        if choice in ["y", "yes"]:
             logger.info("Launching post-processing pipeline...")
             subprocess.run([sys.executable, postprocess_script], check=True)
         else:
-            logger.info("Post-processing skipped. To run manually later, execute:\n\t%s", manual_cmd)
+            logger.info(
+                "Post-processing skipped. To run manually later, execute:\n\t%s",
+                manual_cmd,
+            )
     except subprocess.CalledProcessError as e:
         logger.error("Post-processing script failed with exit code %d.", e.returncode)
     except KeyboardInterrupt:
-        print() # Catch ctrl+c during the input prompt gracefully
-        logger.info("Post-processing aborted. To run manually later, execute:\n\t%s", manual_cmd)
+        print()  # Catch ctrl+c during the input prompt gracefully
+        logger.info(
+            "Post-processing aborted. To run manually later, execute:\n\t%s", manual_cmd
+        )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Automated Network Impairment Parameter Sweep Orchestrator")
-    parser.add_argument(
-        "--interface", type=str, default=os.getenv("DCS_IFACE", "wlan0"),
-        help="Target egress network interface for tc/netem injection"
+    parser = argparse.ArgumentParser(
+        description="Automated Network Impairment Parameter Sweep Orchestrator"
     )
     parser.add_argument(
-        "--c2-url", type=str, default="http://127.0.0.1:5050",
-        help="Supervisory C2 REST API endpoint"
+        "--interface",
+        type=str,
+        default=os.getenv("DCS_IFACE", "wlan0"),
+        help="Target egress network interface for tc/netem injection",
+    )
+    parser.add_argument(
+        "--c2-url",
+        type=str,
+        default="http://127.0.0.1:5050",
+        help="Supervisory C2 REST API endpoint",
     )
     # Dynamic duration controls
     parser.add_argument(
-        "--duration", type=float, default=None,
-        help="Global trial duration override in seconds across all vectors"
+        "--duration",
+        type=float,
+        default=None,
+        help="Global trial duration override in seconds across all vectors",
     )
     parser.add_argument(
-        "--v1-duration", type=float, default=30.0,
-        help="Duration for Vector 1 dead-time trials (default: 30.0s)"
+        "--v1-duration",
+        type=float,
+        default=30.0,
+        help="Duration for Vector 1 dead-time trials (default: 30.0s)",
     )
     parser.add_argument(
-        "--v2-duration", type=float, default=35.0,
-        help="Duration for Vector 2 jitter trials (default: 35.0s)"
+        "--v2-duration",
+        type=float,
+        default=35.0,
+        help="Duration for Vector 2 jitter trials (default: 35.0s)",
     )
     parser.add_argument(
-        "--v3-duration", type=float, default=35.0,
-        help="Duration for Vector 3 burst loss trials (default: 35.0s)"
+        "--v3-duration",
+        type=float,
+        default=35.0,
+        help="Duration for Vector 3 burst loss trials (default: 35.0s)",
     )
     return parser.parse_args()
 
@@ -302,7 +379,7 @@ def main() -> None:
         v3_dur = args.duration
         logger.info(
             "Global duration override active: All vectors configured for %.1f seconds.",
-            args.duration
+            args.duration,
         )
     else:
         v1_dur = args.v1_duration
@@ -310,7 +387,9 @@ def main() -> None:
         v3_dur = args.v3_duration
         logger.info(
             "Per-vector durations active -> Vector 1: %.1fs | Vector 2: %.1fs | Vector 3: %.1fs",
-            v1_dur, v2_dur, v3_dur
+            v1_dur,
+            v2_dur,
+            v3_dur,
         )
 
     logger.info("Starting automated parameter sweeps on interface %s", args.interface)
@@ -335,10 +414,21 @@ def main() -> None:
         else:
             # If aborted, provide the manual command to aggregate any partial trial CSVs generated so far.
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            postprocess_script = os.path.normpath(os.path.join(current_dir, "..", "analysis", "aggregate_and_postprocess.py"))
-            display_path = os.path.relpath(postprocess_script) if "resilient-wireless-pid" in current_dir else postprocess_script
+            postprocess_script = os.path.normpath(
+                os.path.join(
+                    current_dir, "..", "analysis", "aggregate_and_postprocess.py"
+                )
+            )
+            display_path = (
+                os.path.relpath(postprocess_script)
+                if "resilient-wireless-pid" in current_dir
+                else postprocess_script
+            )
 
-            logger.info("Execution was aborted. If you wish to aggregate partial data, manually execute:\n\tpython3 %s", display_path)
+            logger.info(
+                "Execution was aborted. If you wish to aggregate partial data, manually execute:\n\tpython3 %s",
+                display_path,
+            )
 
 
 if __name__ == "__main__":

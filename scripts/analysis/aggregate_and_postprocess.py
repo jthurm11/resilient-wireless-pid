@@ -15,8 +15,7 @@ import os
 import pandas as pd
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("PostProcessing")
 
@@ -202,14 +201,19 @@ def main():
     )
     args = parser.parse_args()
 
-    logger.info("Initializing post-processing pipeline for target: %s", args.environment)
+    logger.info(
+        "Initializing post-processing pipeline for target: %s", args.environment
+    )
     generated = process_exports(
         raw_dir=args.raw_dir,
         output_dir=args.output_dir,
         environment=args.environment,
         override_timestamp=args.timestamp,
     )
-    logger.info("Post-processing aggregation complete. %d vector files generated.", len(generated))
+    logger.info(
+        "Post-processing aggregation complete. %d vector files generated.",
+        len(generated),
+    )
 
 
 if __name__ == "__main__":

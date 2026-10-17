@@ -3,6 +3,7 @@
 scripts/test/test_telemetry_pipeline.py
 Synthetic smoke test to validate InfluxDB v2 line protocol ingestion.
 """
+
 import math
 import os
 import time
@@ -15,7 +16,9 @@ INFLUX_TOKEN = os.getenv("INFLUXDB_TOKEN", "testbed_secret_token_123")
 INFLUX_ORG = os.getenv("INFLUXDB_ORG", "resilient_pid")
 INFLUX_BUCKET = os.getenv("INFLUXDB_BUCKET", "wireless_pid_metrics")
 
-print(f"Connecting to InfluxDB at {INFLUX_URL} (Org: {INFLUX_ORG}, Bucket: {INFLUX_BUCKET})...")
+print(
+    f"Connecting to InfluxDB at {INFLUX_URL} (Org: {INFLUX_ORG}, Bucket: {INFLUX_BUCKET})..."
+)
 
 client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 write_api = client.write_api(write_options=SYNCHRONOUS)
@@ -35,7 +38,7 @@ for k in range(steps):
     pv = setpoint * (1.0 - math.exp(-1.5 * t) * math.cos(3.0 * t))
     error = setpoint - pv
     u_t = 1.2 * error + 0.05 * math.sin(10.0 * t)  # Synthetic control effort
-    rtt = 0.005 + 0.002 * math.sin(5.0 * t)        # Synthetic RTT
+    rtt = 0.005 + 0.002 * math.sin(5.0 * t)  # Synthetic RTT
 
     point = (
         Point("control_telemetry")
