@@ -82,7 +82,7 @@ class SimulatedPlant(BasePlant):
     def __init__(
         self,
         dt: float = 0.05,
-        tube_length_m: float = 0.50,  # 50 cm physical acrylic tube
+        tube_length_m: float = 0.46,  # 45.72 cm physical acrylic tube
         ball_mass_kg: float = 0.0027,  # 2.7g standard ping pong ball
         ball_radius_m: float = 0.020,  # 40mm diameter
         g: float = 9.80665,
@@ -206,7 +206,7 @@ class HardwarePlant(BasePlant):
         emc2101_addr: int = 0x4C,
         trig_pin: int = 23,
         echo_pin: int = 24,
-        tube_length_cm: float = 70.0,
+        tube_length_cm: float = 45.72,
         sensor_at_top: bool = True,
         enable_sensor_thread: bool = True,
     ):
@@ -701,9 +701,15 @@ def parse_args() -> argparse.Namespace:
         help="Whether ultrasonic sensor is top-mounted pointing down (default: True).",
     )
     parser.add_argument(
+        "--tube-type",
+        choices=["acrylic", "cardboard", "sim_lxc", "sim_docker"],
+        default="acrylic",
+        help="Physical column variant installed on the testbed (default: acrylic).",
+    )
+    parser.add_argument(
         "--tube-length",
         type=float,
-        default=70.0,
+        default=45.72,  # match 18 inch acrylic tube (76.20cm/31inch cardboard tube)
         help="Calibrated physical column height in cm (default: 70.0).",
     )
 

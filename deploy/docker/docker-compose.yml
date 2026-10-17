@@ -101,4 +101,4 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - ../../:/opt/resilient-wireless-pid
-    command: run-plant --mode simulate --host 0.0.0.0 --port 5005 --tube-length 76.0
+    command: run-plant --mode simulate --host 0.0.0.0 --port 5005 --tube-type sim_docker

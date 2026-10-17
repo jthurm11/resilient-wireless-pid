@@ -461,7 +461,7 @@ Type=simple
 User=root
 WorkingDirectory=${REPO_ROOT}
 Environment="DCS_ENV=bare_metal"
-ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode hardware --host 0.0.0.0 --port 5005 --tube-length 76.0
+ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode hardware --host 0.0.0.0 --port 5005 --tube-type acrylic
 Restart=on-failure
 RestartSec=3
 KillMode=mixed
