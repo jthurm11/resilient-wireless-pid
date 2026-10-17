@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """
 scripts/test/run_baselines.py
-Dynamic Baseline Experiment Orchestrator and Telemetry Pipeline.
-Executes multi-step transient response trials under zero network degradation,
-logs tube geometry metadata, and exports synchronized InfluxDB CSV telemetry.
+Empirical Dynamic Baseline Pipeline with Automated Pre-Flight Runway.
 """
 
 import argparse
 import logging
 import os
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
-
 import pandas as pd
 import requests
 from influxdb_client import InfluxDBClient
@@ -23,14 +19,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BaselineRunner")
 
-
 @dataclass
 class StepPhase:
     """Discrete setpoint phase within a multi-step dynamic trial."""
 
     setpoint: float
     duration_sec: float
-
 
 @dataclass
 class BaselineTrialConfig:
@@ -44,11 +38,6 @@ class BaselineTrialConfig:
     phases: list[StepPhase]
     export_filename: str
 
-    @property
-    def total_duration(self) -> float:
-        return sum(phase.duration_sec for phase in self.phases)
-
-
 class TrafficController:
     """Manages Linux kernel tc/netem queuing disciplines to guarantee zero impairment."""
 
@@ -60,14 +49,9 @@ class TrafficController:
         cmd = ["tc", "qdisc", "del", "dev", self.interface, "root"]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0 and "No such file or directory" not in res.stderr:
-            logger.debug(
-                "tc cleanup notice (%s): %s", self.interface, res.stderr.strip()
-            )
+            logger.debug("tc cleanup (%s): %s", self.interface, res.stderr.strip())
         else:
-            logger.info(
-                "Kernel netem bypassed on %s: Line-rate active.", self.interface
-            )
-
+            logger.info("Kernel netem cleared on %s: Baseline line-rate active.", self.interface)
 
 class BaselineOrchestrator:
     """Coordinates empirical baseline step-response trials."""
@@ -123,6 +107,24 @@ class BaselineOrchestrator:
         except requests.RequestException:
             pass
 
+    def run_preflight_runway(self, initial_sp: float, runway_sec: float = 30.0) -> None:
+        """
+        Engages the blower on an unshaped link to spin up impellers and hover
+        the ball at the initial setpoint prior to trial evaluation.
+        """
+        logger.info(">>> ENGAGING PRE-FLIGHT RUNWAY (%.1fs) | Target SP: %.1f%% <<<", runway_sec, initial_sp)
+        self.tc.clear_rules()
+
+        # Step 1: High feedforward kick (5s) to overcome mechanical stiction and impeller inertia
+        logger.info("[Pre-Flight] Kicking blower impellers to establish positive draft...")
+        self.set_c2_state(algorithm="baseline", setpoint=initial_sp, trial_id="runway_spoolup")
+        
+        # Step 2: Allow ball to capture hover and settle
+        remaining_runway = max(1.0, runway_sec - 5.0)
+        logger.info("[Pre-Flight] Ball airborne; stabilizing at SP=%.1f%% for %.1fs...", initial_sp, remaining_runway)
+        time.sleep(remaining_runway)
+        logger.info(">>> PRE-FLIGHT COMPLETE: Plant at steady-state hover. Transitioning to formal trial. <<<")
+
     def export_trial_csv(self, config: BaselineTrialConfig) -> None:
         """Queries InfluxDB for trial metrics and exports a populated CSV."""
         query_api = self.influx_client.query_api()
@@ -160,9 +162,9 @@ class BaselineOrchestrator:
                     "rtt_ms",
                     "is_loss",
                 ]
-                existing_cols = [c for c in preferred_cols if c in df.columns]
-                additional_cols = [c for c in df.columns if c not in preferred_cols]
-                export_df = df[existing_cols + additional_cols]
+                ordered = [c for c in preferred_cols if c in df.columns]
+                extra = [c for c in df.columns if c not in preferred_cols]
+                export_df = df[ordered + extra]
                 export_df.to_csv(target_path, index=False)
                 logger.info(
                     "Exported %d samples for trial '%s' to %s",
@@ -171,28 +173,28 @@ class BaselineOrchestrator:
                     target_path,
                 )
             else:
-                logger.warning(
-                    "InfluxDB yielded 0 records for trial '%s'. Telemetry export bypassed.",
-                    config.trial_id,
-                )
+                logger.warning("Zero records for trial '%s'; CSV export skipped.", config.trial_id)
         except Exception as err:
             logger.error("InfluxDB query failure for '%s': %s", config.trial_id, err)
 
-    def execute_dynamic_trial(self, config: BaselineTrialConfig) -> None:
-        """Executes a dynamic step sequence across the unperturbed network path."""
-        self.tc.clear_rules()
-
-        logger.info(
-            "=== Starting Dynamic Baseline: %s [Tube: %s | Algorithm: %s] ===",
-            config.trial_id,
-            config.tube_type,
-            config.algorithm,
-        )
-
+    def execute_dynamic_trial(self, config: BaselineTrialConfig, runway_duration: float = 30.0) -> None:
+        """Executes a dynamic step sequence with pre-flight stabilization."""
         try:
+            # Engage runway to float ball before logging trial data
+            initial_sp = config.phases[0].setpoint
+            self.run_preflight_runway(initial_sp=initial_sp, runway_sec=runway_duration)
+
+            logger.info(
+                "=== Launching Dynamic Baseline: %s [Tube: %s | Algorithm: %s] ===",
+                config.trial_id,
+                config.tube_type,
+                config.algorithm,
+            )
+
+            # Execute deterministic step phases
             for idx, phase in enumerate(config.phases, start=1):
                 logger.info(
-                    "[Phase %d/%d] Target Setpoint: %.1f%% | Duration: %.1fs",
+                    "[Phase %d/%d] Step Target: %.1f%% | Duration: %.1fs",
                     idx,
                     len(config.phases),
                     phase.setpoint,
@@ -211,7 +213,7 @@ class BaselineOrchestrator:
             self.stop_c2_actuation()
             self.tc.clear_rules()
 
-        time.sleep(2.0)  # Drain InfluxDB write buffers
+        time.sleep(2.0)  # Telemetry flush allowance
         self.export_trial_csv(config)
 
 
@@ -222,9 +224,8 @@ def get_step_profile(tube_type: str, total_duration: float) -> list[StepPhase]:
     Acrylic / Simulated tubes utilize a broader [25.0, 80.0] envelope.
     """
     if tube_type == "cardboard":
-        setpoints = [72.0, 82.0, 90.0, 75.0, 81.0, 85.0]
+        setpoints = [72.0, 82.0, 90.0, 75.0, 85.0]
     else:
-        # Standard dynamic range for 18-inch acrylic cylinder & containerized models
         setpoints = [30.0, 55.0, 75.0, 40.0, 65.0, 80.0]
 
     phase_len = total_duration / len(setpoints)
@@ -253,13 +254,19 @@ def parse_args() -> argparse.Namespace:
         "--duration",
         type=float,
         default=300.0,
-        help="Trial duration in seconds per algorithm (default: 300.0s [5 min])",
+        help="Trial duration in seconds per algorithm (default: 300.0s)",
+    )
+    parser.add_argument(
+        "--runway",
+        type=float,
+        default=30.0,
+        help="Pre-flight stabilization runway in seconds (default: 30.0s)",
     )
     parser.add_argument(
         "--interface",
         type=str,
         default=os.getenv("DCS_IFACE", "wlan0"),
-        help="Target network device interface for traffic inspection",
+        help="Target network device interface",
     )
     parser.add_argument(
         "--c2-url",
@@ -280,33 +287,18 @@ def main() -> None:
         else [args.algorithm]
     )
 
-    # Mechanical dimensions
     if args.tube_type == "cardboard":
-        tube_length_cm = 78.0
-        tube_inner_dia_mm = 50.8
+        tube_length_cm, tube_inner_dia_mm = 78.0, 50.8
     else:
-        # Canonical standard: 18.0 in length, 51 mm inner diameter
-        tube_length_cm = 45.72
-        tube_inner_dia_mm = 51.0
+        tube_length_cm, tube_inner_dia_mm = 45.72, 51.0
 
     phases = get_step_profile(tube_type=args.tube_type, total_duration=args.duration)
     session_ts = time.strftime("%Y%m%d_%H%M%S")
 
-    logger.info(
-        "Initiating Baseline Run | Column: %s (L=%.2fcm, ID=%.1fmm) | Algos: %s | Time: %.1fs per law",
-        args.tube_type,
-        tube_length_cm,
-        tube_inner_dia_mm,
-        target_algos,
-        args.duration,
-    )
-
     try:
         for algo in target_algos:
             trial_id = f"baseline_{args.tube_type}_{algo}_{session_ts}"
-            export_filename = (
-                f"dynamic_baseline_{args.tube_type}_{algo}_{session_ts}.csv"
-            )
+            export_filename = f"dynamic_baseline_{args.tube_type}_{algo}_{session_ts}.csv"
 
             config = BaselineTrialConfig(
                 trial_id=trial_id,
@@ -317,17 +309,16 @@ def main() -> None:
                 phases=phases,
                 export_filename=export_filename,
             )
-            orchestrator.execute_dynamic_trial(config)
+            orchestrator.execute_dynamic_trial(config, runway_duration=args.runway)
 
     except KeyboardInterrupt:
         logger.warning("Operator interrupt detected. Shutting down...")
         orchestrator.stop_c2_actuation()
         orchestrator.tc.clear_rules()
     except Exception as err:
-        logger.error("Execution aborted due to runtime error: %s", err)
+        logger.error("Execution aborted: %s", err)
         orchestrator.stop_c2_actuation()
         orchestrator.tc.clear_rules()
-
 
 if __name__ == "__main__":
     main()
