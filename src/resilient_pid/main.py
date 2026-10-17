@@ -158,9 +158,9 @@ class ControllerRuntime:
         self.is_running = True
 
         # Validated gains for calibrated aerodynamic plant
-        self.kp = 0.45
-        self.ki = 0.12
-        self.kd = 0.10
+        self.kp = 0.40
+        self.ki = 0.10
+        self.kd = 0.16
         self.seq_num = 0
         self.expected_rx_seq: int | None = None
         self.last_known_pv = 0.0
@@ -173,7 +173,7 @@ class ControllerRuntime:
                 kd=self.kd,
                 dt=self.dt,
                 output_limits=(0.0, 100.0),
-                integral_limits=(35.0, 75.0),
+                integral_limits=(35.0, 85.0),
                 derivative_filter_tau=0.15,
             ),
             "smith": SmithPredictor(
@@ -182,7 +182,7 @@ class ControllerRuntime:
                 kd=self.kd,
                 dt=self.dt,
                 output_limits=(0.0, 100.0),
-                integral_limits=(35.0, 75.0),
+                integral_limits=(35.0, 85.0),
                 derivative_filter_tau=0.15,
             ),
             "resilient": ResilientPID(
@@ -191,7 +191,7 @@ class ControllerRuntime:
                 kd=self.kd,
                 dt=self.dt,
                 output_limits=(0.0, 100.0),
-                integral_limits=(35.0, 75.0),
+                integral_limits=(35.0, 85.0),
                 derivative_filter_tau=0.15,
             ),
         }
@@ -375,7 +375,7 @@ class ControllerRuntime:
 
                         # Dynamic deadline-bounded poll
                         rx_frame = None
-                        loop_deadline = t_tx + (self.dt * 0.90)
+                        loop_deadline = t_tx + (self.dt * 0.96)
 
                         while True:
                             remaining = loop_deadline - time.perf_counter()
@@ -415,11 +415,20 @@ class ControllerRuntime:
                                     rtt_ms = (t_rx - t_tx) * 1000.0
                                     break
                                 else:
-                                    logger.warning(
-                                        "Out-of-order frame discarded: seq %d (current window: %d)",
-                                        rx_seq,
-                                        self.expected_rx_seq,
-                                    )
+                                    # Demote nominal 1-tick late frames to DEBUG; keep severe out-of-order as WARNING
+                                    if delta == -1:
+                                        logger.debug(
+                                            "Stale frame drained: seq %d (window: %d)",
+                                            rx_seq,
+                                            self.expected_rx_seq,
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "Out-of-order frame anomaly discarded: seq %d (window: %d, delta: %d)",
+                                            rx_seq,
+                                            self.expected_rx_seq,
+                                            delta,
+                                        )
                                     continue
                             except TimeoutError:
                                 break
