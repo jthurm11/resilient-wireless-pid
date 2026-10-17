@@ -6,6 +6,7 @@ Coordinates supervisory C2 state, real-time UDP telemetry, and InfluxDB persiste
 """
 
 import argparse
+import errno
 import json
 import logging
 import os
@@ -162,6 +163,7 @@ class ControllerRuntime:
         self.ki = 0.12
         self.kd = 0.06
         self.seq_num = 0
+        self.expected_rx_seq: int | None = None
         self.last_known_pv = 0.0
         self.last_u = 0.0
 
@@ -204,8 +206,30 @@ class ControllerRuntime:
         if not self.args.mock_loop:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # 45ms timeout protects the 50ms discrete loop deadline
-            self._socket.settimeout(self.dt * 0.90)
+            # Allocate a 64KB receive buffer to absorb burst jitter without packet drop
+            self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            self._drain_socket_buffer()
+
+    def _drain_socket_buffer(self) -> None:
+        """Flushes residual kernel socket queues non-blockingly."""
+        if self._socket is None:
+            return
+        original_timeout = self._socket.gettimeout()
+        self._socket.setblocking(False)
+        drained_count = 0
+        try:
+            while True:
+                _, _ = self._socket.recvfrom(2048)
+                drained_count += 1
+        except (BlockingIOError, socket.error):
+            pass
+        finally:
+            if original_timeout is not None:
+                self._socket.settimeout(original_timeout)
+            else:
+                self._socket.setblocking(True)
+        if drained_count > 0:
+            logger.info("Purged %d stale frame(s) from kernel UDP queue.", drained_count)
 
     def _sync_initial_c2_state(self) -> None:
         """Query C2 synchronously once prior to loop boot to avoid tag desync."""
@@ -311,8 +335,10 @@ class ControllerRuntime:
                     for ctrl in self.controllers.values():
                         ctrl.reset()
                     self.seq_num = 0
+                    self.expected_rx_seq = None
                     self.last_known_pv = 0.0
                     self.last_u = 0.0
+                    self._drain_socket_buffer()
                     time.sleep(0.01)
                     next_tick = time.perf_counter()
                     continue
@@ -341,27 +367,71 @@ class ControllerRuntime:
                 try:
                     if self._socket is not None:
                         self._socket.sendto(payload, self.plant_addr)
-                        raw, _ = self._socket.recvfrom(1024)
-                        rtt_ms = (time.perf_counter() - t_tx) * 1000.0
-                        resp = json.loads(raw.decode("utf-8"))
-                        rx_seq = resp.get("seq")
+                        
+                        # Dynamic deadline-bounded poll
+                        rx_frame = None
+                        loop_deadline = t_tx + (self.dt * 0.90)
 
-                        # Validate sequence correspondence
-                        if rx_seq == self.seq_num:
-                            current_pv = float(resp["pv"])
+                        while True:
+                            remaining = loop_deadline - time.perf_counter()
+                            if remaining <= 0:
+                                break
+                            self._socket.settimeout(remaining)
+                            try:
+                                raw, _ = self._socket.recvfrom(1024)
+                                t_rx = time.perf_counter()
+                                resp = json.loads(raw.decode("utf-8"))
+                                rx_seq = resp.get("seq")
+
+                                if rx_seq is None:
+                                    continue
+
+                                # Sliding-Window Resynchronization Tracker
+                                if self.expected_rx_seq is None:
+                                    self.expected_rx_seq = rx_seq
+                                    rx_frame = resp
+                                    rtt_ms = (t_rx - t_tx) * 1000.0
+                                    break
+                                
+                                delta = rx_seq - self.expected_rx_seq
+                                if delta == 0:
+                                    rx_frame = resp
+                                    rtt_ms = (t_rx - t_tx) * 1000.0
+                                    break
+                                elif delta > 0:
+                                    logger.warning(
+                                        "Frame loss detected: dropped %d packets (expected %d, got %d)",
+                                        delta,
+                                        self.expected_rx_seq,
+                                        rx_seq,
+                                    )
+                                    self.expected_rx_seq = rx_seq
+                                    rx_frame = resp
+                                    rtt_ms = (t_rx - t_tx) * 1000.0
+                                    break
+                                else:
+                                    logger.warning(
+                                        "Out-of-order frame discarded: seq %d (current window: %d)",
+                                        rx_seq,
+                                        self.expected_rx_seq,
+                                    )
+                                    continue
+                            except (socket.timeout, TimeoutError):
+                                break
+
+                        if rx_frame is not None:
+                            current_pv = float(rx_frame["pv"])
                             self.last_known_pv = current_pv
+                            self.expected_rx_seq += 1
                             is_loss = False
                         else:
-                            logger.warning(
-                                "Seq mismatch: expected %d, got %s",
-                                self.seq_num,
-                                rx_seq,
-                            )
                             is_loss = True
+                            rtt_ms = None
+                            if self.expected_rx_seq is not None:
+                                self.expected_rx_seq += 1
                     else:
                         is_loss = True
                 except (
-                    TimeoutError,
                     OSError,
                     ConnectionRefusedError,
                     json.JSONDecodeError,

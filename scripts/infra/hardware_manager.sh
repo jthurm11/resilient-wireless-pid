@@ -461,11 +461,15 @@ Type=simple
 User=root
 WorkingDirectory=${REPO_ROOT}
 Environment="DCS_ENV=bare_metal"
-ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode hardware --host 0.0.0.0 --port 5005
-Restart=always
+ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode hardware --host 0.0.0.0 --port 5005 --tube-length 76.0
+Restart=on-failure
 RestartSec=3
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5s
 CPUSchedulingPolicy=rr
 CPUSchedulingPriority=80
+ExecStopPost=/usr/sbin/i2cset -y 1 0x4c 0x4c 0x00
 
 [Install]
 WantedBy=multi-user.target

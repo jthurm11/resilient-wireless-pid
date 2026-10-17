@@ -1,0 +1,161 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "type": "xychart",
+      "title": "State-Space Phase Portrait: Error vs. ΔError/Δt",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> derivative(unit: 50ms, nonNegative: false)\n  |> set(key: \"_field\", value: \"error_derivative\")\n  |> yield(name: \"derivative\")\n\nfrom(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> yield(name: \"error\")"
+        }
+      ],
+      "options": {
+        "seriesMapping": "auto",
+        "series": [
+          {
+            "x": "error",
+            "y": "error_derivative",
+            "lineStyle": { "line": { "color": "blue", "width": 1 } },
+            "pointStyle": { "size": 3, "symbol": "circle" }
+          }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "type": "histogram",
+      "title": "Round-Trip Time (RTT) Probability Distribution",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt_ms\")\n  |> yield(name: \"rtt_dist\")"
+        }
+      ],
+      "options": {
+        "bucketSize": 2,
+        "bucketOffset": 0,
+        "combine": false
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 80, "lineWidth": 1 },
+          "unit": "ms"
+        }
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "type": "heatmap",
+      "title": "Actuator Output Density Map u(t)",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"control_signal\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"actuator_heatmap\")"
+        }
+      ],
+      "options": {
+        "calculate": true,
+        "calculation": { "xBuckets": { "mode": "size", "value": "10s" }, "yBuckets": { "mode": "count", "value": 20 } },
+        "color": { "mode": "scheme", "scheme": "Oranges", "fill": "dark-orange" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 10 }
+    },
+    {
+      "type": "bargauge",
+      "title": "Algorithm Leaderboard: Integral Absolute Error (IAE)",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> map(fn: (r) => ({ r with _value: if r._value < 0.0 then -r._value else r._value }))\n  |> group(columns: [\"trial_id\", \"algorithm\"])\n  |> sum()\n  |> yield(name: \"iae\")"
+        }
+      ],
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1000 },
+              { "color": "red", "value": 5000 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 10 }
+    },
+    {
+      "type": "state-timeline",
+      "title": "Transport Link State (Packet Starvation)",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"is_loss\")\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)\n  |> yield(name: \"link_state\")"
+        }
+      ],
+      "options": {
+        "alignValue": "left",
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "never"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "fillOpacity": 80, "lineWidth": 0 },
+          "mappings": [
+            {
+              "options": {
+                "0": { "color": "green", "index": 0, "text": "Connected" },
+                "1": { "color": "red", "index": 1, "text": "Timeout/Loss" }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 20 }
+    }
+  ],
+  "refresh": "1s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["dcs", "pid", "capstone", "analytics"],
+  "time": { "from": "now-5m", "to": "now" },
+  "timezone": "browser",
+  "title": "Wireless PID Advanced Analytics",
+  "uid": "pid-advanced-analytics"
+}

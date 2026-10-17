@@ -7,11 +7,14 @@ and a realistic, continuous aerodynamic software twin (RK4 integration).
 
 Uses an asynchronous worker thread for HC-SR04 ping acquisition to decouple
 acoustic flight-time latency from real-time UDP telemetry response deadlines.
+Implements POSIX signal handling (SIGTERM/SIGINT) to guarantee safe de-energization
+of the EMC2101 fan actuator and deterministic deallocation of GPIO lines.
 """
 
 import argparse
 import json
 import logging
+import signal
 import socket
 import threading
 import time
@@ -353,20 +356,32 @@ class HardwarePlant(BasePlant):
         return pv
 
     def cleanup(self) -> None:
-        """De-energizes fan motor, terminates worker thread, releases GPIO lines."""
+        """Atomic safe de-energization of physical actuators and pin release."""
+        logger.info("Executing HardwarePlant teardown sequence...")
         self._running = False
-        if hasattr(self, "worker_thread") and self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=0.2)
 
+        if hasattr(self, "worker_thread") and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=0.3)
+
+        # Force duty cycle to 0.0% and release I2C handle
         try:
-            if hasattr(self, "bus"):
+            if hasattr(self, "bus") and self.bus is not None:
                 self.bus.write_byte_data(self.emc_addr, 0x4C, 0x00)
                 self.bus.close()
-        except Exception:
-            pass
+                logger.info("EMC2101 fan duty cycle zeroed (0x00) and SMBus handle closed.")
+        except Exception as e:
+            logger.error("Failed to zero fan actuator during teardown: %s", e)
 
-        if GPIO:
-            GPIO.cleanup([self.trig_pin, self.echo_pin])
+        try:
+            if HARDWARE_AVAILABLE and GPIO is not None:
+                GPIO.cleanup([self.trig_pin, self.echo_pin])
+                logger.info(
+                    "GPIO lines released: TRIG=%d, ECHO=%d.",
+                    self.trig_pin,
+                    self.echo_pin,
+                )
+        except Exception as e:
+            logger.error("Failed to release GPIO lines: %s", e)
 
 
 def parse_args() -> argparse.Namespace:
@@ -420,9 +435,32 @@ def main() -> None:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((args.host, args.port))
 
+    # Signal synchronization flag
+    shutdown_requested = threading.Event()
+
+    def _sig_handler(signum: int, _frame: Any) -> None:
+        """Intercepts SIGTERM and SIGINT to cleanly unwind the primary UDP thread."""
+        sig_name = signal.Signals(signum).name
+        logger.info("Signal %s (%d) received. Unwinding main runtime loop...", sig_name, signum)
+        shutdown_requested.set()
+        # Closing the socket forces sock.recvfrom(1024) to unblock immediately with an OSError
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    # Register handlers for systemd termination (SIGTERM) and interactive break (SIGINT)
+    signal.signal(signal.SIGTERM, _sig_handler)
+    signal.signal(signal.SIGINT, _sig_handler)
+
     try:
-        while True:
-            data, addr = sock.recvfrom(1024)
+        while not shutdown_requested.is_set():
+            try:
+                data, addr = sock.recvfrom(1024)
+            except OSError:
+                # Socket closed by signal handler or shutdown sequence
+                break
+
             t_recv = time.perf_counter()
 
             try:
@@ -437,13 +475,21 @@ def main() -> None:
             pv = plant.step(u_t)
 
             resp = {"seq": seq, "pv": pv, "t_send": t_send, "t_echo": t_recv}
-            sock.sendto(json.dumps(resp).encode("utf-8"), addr)
+            try:
+                sock.sendto(json.dumps(resp).encode("utf-8"), addr)
+            except OSError:
+                break
 
     except KeyboardInterrupt:
-        logger.info("Plant termination requested.")
+        logger.info("Interactive KeyboardInterrupt caught.")
     finally:
-        sock.close()
+        logger.info("Entering final daemon shutdown sequence...")
         plant.cleanup()
+        try:
+            sock.close()
+        except OSError:
+            pass
+        logger.info("Plant service successfully stopped.")
 
 
 if __name__ == "__main__":
