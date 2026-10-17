@@ -49,8 +49,8 @@ class DiscretePID:
 
     def reset(self) -> None:
         """Reset internal integrator, previous PV, and derivative registers."""
-        self.integral = 45.0
-        self.prev_pv = None
+        self.integral = 0.0
+        self.prev_pv = 0.0
         self.filtered_derivative = 0.0
 
     def update(self, setpoint: float, pv: float, is_loss: bool = False) -> float:
