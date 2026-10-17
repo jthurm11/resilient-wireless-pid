@@ -461,11 +461,15 @@ Type=simple
 User=root
 WorkingDirectory=${REPO_ROOT}
 Environment="DCS_ENV=bare_metal"
-ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode hardware --host 0.0.0.0 --port 5005
-Restart=always
+ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode hardware --host 0.0.0.0 --port 5005 --tube-length 76.0
+Restart=on-failure
 RestartSec=3
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5s
 CPUSchedulingPolicy=rr
 CPUSchedulingPriority=80
+ExecStopPost=/usr/sbin/i2cset -y 1 0x4c 0x4c 0x00
 
 [Install]
 WantedBy=multi-user.target
@@ -562,17 +566,18 @@ action_status() {
   echo -e "${TAB}${BOLD}Host System:${CL}          $(hostname) ($(uname -m))"
   
   local ip_configured
-  ip_configured="$(ip -4 addr show dev "$iface" | grep -oE "10\.10\.10\.[12]" || echo "NONE")"
+  ip_configured="$(ip -4 -o addr show dev "$iface" | awk '$4 ~ /^10\.10\.10\.[12]\// {split($4, a, "/"); print a[1]}')"
+  ip_configured="${ip_configured:-NONE}"
   echo -e "${TAB}${BOLD}DCS Secondary IP:${CL}     ${ip_configured} on ${iface}"
 
   if [ -n "$unit" ]; then
     local status_line
-    status_line="$(systemctl is-active "$unit" 2>/dev/null || echo "inactive")"
+    status_line="$(systemctl is-active "$unit" 2>/dev/null"
     echo -e "${TAB}${BOLD}Runtime Daemon:${CL}       ${unit} (${status_line})"
   fi
 
   local led_status
-  led_status="$(systemctl is-active dcs-led-monitor.service 2>/dev/null || echo "not installed/inactive")"
+  led_status="$(systemctl is-active dcs-led-monitor.service 2>/dev/null"
   echo -e "${TAB}${BOLD}Diagnostic Supervisor:${CL} dcs-led-monitor.service (${led_status})"
 
   if command -v i2cdetect >/dev/null 2>&1; then

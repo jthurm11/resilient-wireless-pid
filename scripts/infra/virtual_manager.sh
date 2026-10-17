@@ -383,9 +383,12 @@ User=root
 WorkingDirectory=/opt/resilient-wireless-pid
 Environment=\"DCS_ENV=proxmox_lxc\"
 EnvironmentFile=-/etc/environment
-ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.plant.plant_interface --mode simulate --host 0.0.0.0 --port 5005
-Restart=always
+ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode simulate --host 0.0.0.0 --port 5005 --tube-length 76.0
+Restart=on-failure
 RestartSec=3
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5s
 CPUSchedulingPolicy=rr
 CPUSchedulingPriority=80
 
@@ -409,7 +412,7 @@ WorkingDirectory=/opt/resilient-wireless-pid
 Environment=\"DCS_ENV=proxmox_lxc\"
 Environment=\"PYTHONUNBUFFERED=1\"
 EnvironmentFile=-/etc/environment
-ExecStart=/opt/resilient-wireless-pid/.venv/bin/python -m resilient_pid.main --enable-ui
+ExecStart=${REPO_ROOT}/.venv/bin/run-controller --enable-ui
 Restart=on-failure
 RestartSec=5
 CPUSchedulingPolicy=rr

@@ -27,6 +27,7 @@ class SmithPredictor:
         dt: float = 0.05,
         plant_delay_ms: float = 100.0,
         output_limits: tuple[float, float] = (0.0, 100.0),
+        integral_limits: tuple[float, float] = (32.0, 65.0),
         derivative_filter_tau: float = 0.02,
     ):
         """
@@ -39,6 +40,7 @@ class SmithPredictor:
             dt (float): Sampling interval in seconds.
             plant_delay_ms (float): Expected transport latency in milliseconds.
             output_limits (Tuple[float, float]): Actuator output bounds (min, max).
+            integral_limits (Tuple[float, float]): Internal integrator saturation bounds (min, max).
             derivative_filter_tau (float): Time constant for derivative filter.
         """
         self.kp = kp
@@ -46,6 +48,7 @@ class SmithPredictor:
         self.kd = kd
         self.dt = dt
         self.output_limits = output_limits
+        self.integral_limits = integral_limits
         self.plant_delay_ms = plant_delay_ms
 
         # Embedded baseline controller
@@ -55,6 +58,7 @@ class SmithPredictor:
             kd=self.kd,
             dt=self.dt,
             output_limits=self.output_limits,
+            integral_limits=self.integral_limits,
             derivative_filter_tau=derivative_filter_tau,
         )
 
