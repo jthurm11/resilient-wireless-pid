@@ -6,7 +6,6 @@ Coordinates supervisory C2 state, real-time UDP telemetry, and InfluxDB persiste
 """
 
 import argparse
-import errno
 import json
 import logging
 import os
@@ -221,7 +220,7 @@ class ControllerRuntime:
             while True:
                 _, _ = self._socket.recvfrom(2048)
                 drained_count += 1
-        except (BlockingIOError, socket.error):
+        except (OSError, BlockingIOError):
             pass
         finally:
             if original_timeout is not None:
@@ -367,7 +366,7 @@ class ControllerRuntime:
                 try:
                     if self._socket is not None:
                         self._socket.sendto(payload, self.plant_addr)
-                        
+
                         # Dynamic deadline-bounded poll
                         rx_frame = None
                         loop_deadline = t_tx + (self.dt * 0.90)
@@ -392,7 +391,7 @@ class ControllerRuntime:
                                     rx_frame = resp
                                     rtt_ms = (t_rx - t_tx) * 1000.0
                                     break
-                                
+
                                 delta = rx_seq - self.expected_rx_seq
                                 if delta == 0:
                                     rx_frame = resp
@@ -416,7 +415,7 @@ class ControllerRuntime:
                                         self.expected_rx_seq,
                                     )
                                     continue
-                            except (socket.timeout, TimeoutError):
+                            except TimeoutError:
                                 break
 
                         if rx_frame is not None:

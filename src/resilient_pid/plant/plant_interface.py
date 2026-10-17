@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
 src/resilient_pid/plant/plant_interface.py
-Unified Plant Runtime Daemon for Resilient Wireless PID DCS.
+Unified Plant Runtime Daemon & Diagnostic Suite for Resilient Wireless PID DCS.
 Provides an interchangeable interface between physical hardware (PWM/I2C/GPIO)
-and a realistic, continuous aerodynamic software twin (RK4 integration).
+and a continuous aerodynamic software twin (RK4 integration).
 
 Uses an asynchronous worker thread for HC-SR04 ping acquisition to decouple
 acoustic flight-time latency from real-time UDP telemetry response deadlines.
 Implements POSIX signal handling (SIGTERM/SIGINT) to guarantee safe de-energization
 of the EMC2101 fan actuator and deterministic deallocation of GPIO lines.
+
+Supports integrated diagnostics:
+  --op-test     : Verifies local fan step actuation & inbound C2 control reaction.
+  --cycle-test  : Executes continuous step-response mechanical cycling.
 """
 
 import argparse
@@ -16,6 +20,8 @@ import json
 import logging
 import signal
 import socket
+import subprocess
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -181,14 +187,25 @@ class HardwarePlant(BasePlant):
     ball elevation via an asynchronous HC-SR04 ultrasonic worker.
     """
 
+    # EMC2101 Register Map
+    REG_CONFIG = 0x03
+    REG_STATUS = 0x02
+    REG_TACH_LSB = 0x46
+    REG_TACH_MSB = 0x47
+    REG_FAN_CONFIG = 0x4A
+    REG_FAN_SETTING = 0x4C
+    REG_PWM_FREQ = 0x4D
+    REG_PWM_DIV = 0x4E
+
     def __init__(
         self,
         i2c_bus: int = 1,
         emc2101_addr: int = 0x4C,
         trig_pin: int = 23,
         echo_pin: int = 24,
-        tube_length_cm: float = 50.0,
+        tube_length_cm: float = 70.0,
         sensor_at_top: bool = True,
+        enable_sensor_thread: bool = True,
     ):
         if not HARDWARE_AVAILABLE:
             raise RuntimeError(
@@ -200,6 +217,7 @@ class HardwarePlant(BasePlant):
         self.echo_pin = echo_pin
         self.tube_length_cm = tube_length_cm
         self.sensor_at_top = sensor_at_top
+        self.enable_sensor_thread = enable_sensor_thread
 
         # Thread synchronization state
         self._lock = threading.Lock()
@@ -220,14 +238,15 @@ class HardwarePlant(BasePlant):
         time.sleep(0.05)  # Transducer settling interval
 
         # Launch Asynchronous Sensor Acquisition Worker
-        self.worker_thread = threading.Thread(
-            target=self._sensor_worker, name="HCSR04-Poller", daemon=True
-        )
-        self.worker_thread.start()
+        if self.enable_sensor_thread:
+            self.worker_thread = threading.Thread(
+                target=self._sensor_worker, name="HCSR04-Poller", daemon=True
+            )
+            self.worker_thread.start()
 
         logger.info(
             "HardwarePlant online: EMC2101 (0x%02X on I2C-%d) | HC-SR04 (TRIG=%d, ECHO=%d) | "
-            "Mounting: %s | Height: %.1f cm | Mode: Asynchronous",
+            "Mounting: %s | Height: %.1f cm",
             self.emc_addr,
             i2c_bus,
             self.trig_pin,
@@ -237,16 +256,38 @@ class HardwarePlant(BasePlant):
         )
 
     def _init_emc2101(self) -> None:
-        """Configures EMC2101 internal registers for direct manual PWM control."""
+        """Configures EMC2101 for direct PWM control and max resolution."""
         try:
-            # Register 0x4A: Fan Configuration (Bit 5 = 1 for Direct Mode)
-            current_config = self.bus.read_byte_data(self.emc_addr, 0x4A)
-            self.bus.write_byte_data(self.emc_addr, 0x4A, current_config | 0x20)
-            # Register 0x4C: Initialize Fan Setting to 0% duty
-            self.bus.write_byte_data(self.emc_addr, 0x4C, 0x00)
+            cfg = self.bus.read_byte_data(self.emc_addr, self.REG_FAN_CONFIG)
+            self.bus.write_byte_data(self.emc_addr, self.REG_FAN_CONFIG, cfg | 0x20)
+            self.bus.write_byte_data(self.emc_addr, self.REG_PWM_FREQ, 0x1F)
+            self.bus.write_byte_data(self.emc_addr, self.REG_PWM_DIV, 0x01)
+            self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SETTING, 0x00)
         except Exception as e:
             logger.error("Failed to initialize EMC2101 over I2C: %s", e)
             raise
+
+    def set_fan_pwm(self, duty_percent: float) -> None:
+        """Sets fan duty cycle [0.0 - 100.0] via 6-bit register (0-63)."""
+        clamped = max(0.0, min(100.0, duty_percent))
+        reg_value = int(round((clamped / 100.0) * 63.0))
+        try:
+            self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SETTING, reg_value)
+        except Exception as e:
+            logger.warning("EMC2101 I2C write failed: %s", e)
+
+    def read_tach_rpm(self) -> float:
+        """Decodes raw 16-bit TACH registers to revolutions-per-minute."""
+        try:
+            lsb = self.bus.read_byte_data(self.emc_addr, self.REG_TACH_LSB)
+            msb = self.bus.read_byte_data(self.emc_addr, self.REG_TACH_MSB)
+            count = (msb << 8) | lsb
+            if count in (0x0000, 0xFFFF):
+                return 0.0
+            return float((90000 * 60) / count)
+        except Exception as e:
+            logger.debug("Failed to read TACH from EMC2101: %s", e)
+            return 0.0
 
     def _acquire_distance_cm(self) -> float:
         """
@@ -297,7 +338,6 @@ class HardwarePlant(BasePlant):
                 if 2.0 <= d <= (self.tube_length_cm + 5.0):
                     self._miss_count = 0
                     self._last_distance_cm = d
-
                     if self.sensor_at_top:
                         # Top sensor pointing down:
                         # At top (d ~ 0 cm) -> ball_height = tube_length (PV ~ 100%)
@@ -306,7 +346,6 @@ class HardwarePlant(BasePlant):
                             0.0, min(self.tube_length_cm, self.tube_length_cm - d)
                         )
                     else:
-                        # Bottom sensor pointing up:
                         ball_height_cm = max(0.0, min(self.tube_length_cm, d))
 
                     self._current_pv = float(
@@ -329,15 +368,7 @@ class HardwarePlant(BasePlant):
         Actuates EMC2101 fan duty cycle and immediately returns cached PV.
         Guaranteed execution time < 1.0 ms. Zero chance of UDP socket timeout.
         """
-        # Non-blocking actuator write via I2C
-        duty_clamped = max(0.0, min(100.0, u_t))
-        reg_value = int(round((duty_clamped / 100.0) * 63.0))
-        try:
-            self.bus.write_byte_data(self.emc_addr, 0x4C, reg_value)
-        except Exception as e:
-            logger.warning("EMC2101 I2C write failed: %s", e)
-
-        # Instantaneous atomic read from shared memory
+        self.set_fan_pwm(u_t)
         with self._lock:
             pv = self._current_pv
             dist = self._last_distance_cm
@@ -359,14 +390,13 @@ class HardwarePlant(BasePlant):
         """Atomic safe de-energization of physical actuators and pin release."""
         logger.info("Executing HardwarePlant teardown sequence...")
         self._running = False
-
         if hasattr(self, "worker_thread") and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=0.3)
 
         # Force duty cycle to 0.0% and release I2C handle
         try:
             if hasattr(self, "bus") and self.bus is not None:
-                self.bus.write_byte_data(self.emc_addr, 0x4C, 0x00)
+                self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SETTING, 0x00)
                 self.bus.close()
                 logger.info("EMC2101 fan duty cycle zeroed (0x00) and SMBus handle closed.")
         except Exception as e:
@@ -384,6 +414,115 @@ class HardwarePlant(BasePlant):
             logger.error("Failed to release GPIO lines: %s", e)
 
 
+def ensure_service_stopped(service_name: str = "dcs-plant.service") -> None:
+    """Verifies that the background systemd daemon is deactivated."""
+    try:
+        status_res = subprocess.run(
+            ["systemctl", "is-active", "--quiet", service_name],
+            check=False,
+        )
+        if status_res.returncode == 0:
+            logger.warning("%s is running. Stopping service to prevent socket/I2C contention...", service_name)
+            subprocess.run(["sudo", "systemctl", "stop", service_name], check=True)
+            time.sleep(1.0)
+            logger.info("%s stopped successfully.", service_name)
+    except Exception as e:
+        logger.error("Failed to evaluate/stop %s: %s", service_name, e)
+
+
+def run_op_test(plant: HardwarePlant, host: str, port: int, max_frames: int = 50) -> None:
+    """Runs actuation step-sweep and verifies reaction to control node frames."""
+    print("\n" + "=" * 65)
+    print("STAGE 1: Open-Loop Fan Actuation & Tachometer Validation")
+    print("=" * 65)
+    test_levels = [0.0, 30.0, 60.0, 90.0, 0.0]
+
+    for target_pwm in test_levels:
+        plant.set_fan_pwm(target_pwm)
+        print(f"\n[COMMAND] Commanded Duty: {target_pwm:5.1f}% | Stabilizing...")
+        time.sleep(1.2)
+
+        samples = []
+        for _ in range(5):
+            samples.append(plant.read_tach_rpm())
+            time.sleep(0.3)
+
+        avg_rpm = sum(samples) / len(samples) if samples else 0.0
+        print(f"[METRIC] Steady-State Speed: {avg_rpm:6.1f} RPM")
+
+        if target_pwm >= 30.0 and avg_rpm < 100.0:
+            print(f"[FAIL] Fan commanded to {target_pwm}% but TACH returned {avg_rpm:.1f} RPM.")
+            return
+
+    print("\n[SUCCESS] Stage 1 complete: Actuation and tachometer feedback verified.")
+
+    print("\n" + "=" * 65)
+    print("STAGE 2: Control Node Network Reaction Test")
+    print(f"Listening on UDP {host}:{port} for {max_frames} inbound packets...")
+    print("=" * 65)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.settimeout(6.0)
+
+    received = 0
+    try:
+        while received < max_frames:
+            try:
+                data, addr = sock.recvfrom(1024)
+                t_recv = time.perf_counter()
+                pkt = json.loads(data.decode("utf-8"))
+
+                seq = pkt.get("seq")
+                u_cmd = float(pkt.get("u", 0.0))
+                t_send = pkt.get("t_send")
+
+                # Actuate plant from control message
+                pv = plant.step(u_cmd)
+                rpm = plant.read_tach_rpm()
+
+                latency_str = (
+                    f"{(t_recv - t_send) * 1000.0:5.2f} ms" if t_send else "N/A"
+                )
+                print(
+                    f"[RX #{received+1:02d}] Seq: {seq} | Command u(t): {u_cmd:5.1f}% | "
+                    f"TACH: {rpm:6.1f} RPM | PV: {pv:5.1f}% | Transit: {latency_str}"
+                )
+
+                # Echo response packet
+                resp = {"seq": seq, "pv": pv, "t_send": t_send, "t_echo": t_recv}
+                sock.sendto(json.dumps(resp).encode("utf-8"), addr)
+                received += 1
+
+            except TimeoutError:
+                print("[ERROR] Socket timeout (>6s). No datagrams received from control node.")
+                return
+    finally:
+        sock.close()
+
+    print(f"\n[SUCCESS] Stage 2 complete: Handled {received} controller frames successfully.")
+
+
+def run_cycle_test(plant: HardwarePlant, cycles: int = 5, step_interval: float = 3.0) -> None:
+    """Cycles the fan through step profiles to test mechanical repeatability."""
+    print("\n" + "=" * 65)
+    print(f"Executing Continuous Cycle Test ({cycles} iterations)")
+    print("=" * 65)
+
+    duty_profile = [20.0, 50.0, 80.0, 40.0, 0.0]
+
+    for cycle in range(1, cycles + 1):
+        print(f"\n--- Cycle {cycle}/{cycles} ---")
+        for u in duty_profile:
+            pv = plant.step(u)
+            time.sleep(step_interval)
+            rpm = plant.read_tach_rpm()
+            print(f"Commanded: {u:5.1f}% | PV: {pv:5.1f}% | TACH: {rpm:6.1f} RPM")
+
+    print("\n[SUCCESS] Cycle test complete.")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Distributed Control System - Plant Node Daemon"
@@ -395,25 +534,48 @@ def parse_args() -> argparse.Namespace:
         "--sensor-at-top",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Whether the ultrasonic sensor is top-mounted pointing down (default: True).",
+        help="Whether ultrasonic sensor is top-mounted pointing down (default: True).",
     )
     parser.add_argument(
         "--tube-length",
         type=float,
-        default=50.0,
-        help="Physical column height in cm (default: 50.0).",
+        default=70.0,
+        help="Calibrated physical column height in cm (default: 70.0).",
     )
+
+    # Diagnostic mode arguments
+    diag_group = parser.add_mutually_exclusive_group()
+    diag_group.add_argument(
+        "--op-test",
+        action="store_true",
+        help="Execute operational fan actuation and remote controller message verification.",
+    )
+    diag_group.add_argument(
+        "--cycle-test",
+        action="store_true",
+        help="Execute continuous dynamic actuation step-cycle test.",
+    )
+    parser.add_argument(
+        "--cycles",
+        type=int,
+        default=5,
+        help="Number of iterations for --cycle-test (default: 5).",
+    )
+
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    # Pre-execution service contention handling
+    if args.op_test or args.cycle_test:
+        ensure_service_stopped("dcs-plant.service")
+
     plant: BasePlant
     if args.mode == "hardware":
         if not HARDWARE_AVAILABLE:
-            logger.error(
-                "Physical drivers unavailable. Launching simulated twin instead."
-            )
+            logger.error("Physical drivers unavailable. Falling back to simulated twin.")
             plant = SimulatedPlant(tube_length_m=args.tube_length / 100.0)
         else:
             plant = HardwarePlant(
@@ -423,6 +585,28 @@ def main() -> None:
     else:
         plant = SimulatedPlant(tube_length_m=args.tube_length / 100.0)
 
+    # Dispatch to diagnostics if requested
+    if args.op_test:
+        if not isinstance(plant, HardwarePlant):
+            logger.fatal("--op-test requires physical hardware execution.")
+            sys.exit(1)
+        try:
+            run_op_test(plant, host=args.host, port=args.port)
+        finally:
+            plant.cleanup()
+        return
+
+    if args.cycle_test:
+        if not isinstance(plant, HardwarePlant):
+            logger.fatal("--cycle-test requires physical hardware execution.")
+            sys.exit(1)
+        try:
+            run_cycle_test(plant, cycles=args.cycles)
+        finally:
+            plant.cleanup()
+        return
+
+    # Nominal Daemon Runtime Loop
     logger.info(
         "Plant Service active | Mode: %s | Socket: %s:%d | Mount: %s",
         args.mode.upper(),
@@ -435,13 +619,12 @@ def main() -> None:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((args.host, args.port))
 
-    # Signal synchronization flag
     shutdown_requested = threading.Event()
 
     def _sig_handler(signum: int, _frame: Any) -> None:
         """Intercepts SIGTERM and SIGINT to cleanly unwind the primary UDP thread."""
         sig_name = signal.Signals(signum).name
-        logger.info("Signal %s (%d) received. Unwinding main runtime loop...", sig_name, signum)
+        logger.info("Signal %s (%d) caught. Unwinding main runtime loop...", sig_name, signum)
         shutdown_requested.set()
         # Closing the socket forces sock.recvfrom(1024) to unblock immediately with an OSError
         try:
@@ -458,7 +641,6 @@ def main() -> None:
             try:
                 data, addr = sock.recvfrom(1024)
             except OSError:
-                # Socket closed by signal handler or shutdown sequence
                 break
 
             t_recv = time.perf_counter()
