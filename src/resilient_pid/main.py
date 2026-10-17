@@ -158,13 +158,13 @@ class ControllerRuntime:
         self.is_running = True
 
         # Validated gains for calibrated aerodynamic plant
-        self.kp = 0.35
+        self.kp = 0.45
         self.ki = 0.12
-        self.kd = 0.06
+        self.kd = 0.10
         self.seq_num = 0
         self.expected_rx_seq: int | None = None
         self.last_known_pv = 0.0
-        self.last_u = 0.0
+        self.last_u = 45.0
 
         self.controllers: dict[str, ControllerType] = {
             "baseline": DiscretePID(
@@ -173,6 +173,8 @@ class ControllerRuntime:
                 kd=self.kd,
                 dt=self.dt,
                 output_limits=(0.0, 100.0),
+                integral_limits=(35.0, 75.0),
+                derivative_filter_tau=0.15,
             ),
             "smith": SmithPredictor(
                 kp=self.kp,
@@ -180,6 +182,8 @@ class ControllerRuntime:
                 kd=self.kd,
                 dt=self.dt,
                 output_limits=(0.0, 100.0),
+                integral_limits=(35.0, 75.0),
+                derivative_filter_tau=0.15,
             ),
             "resilient": ResilientPID(
                 kp=self.kp,
@@ -187,6 +191,8 @@ class ControllerRuntime:
                 kd=self.kd,
                 dt=self.dt,
                 output_limits=(0.0, 100.0),
+                integral_limits=(35.0, 75.0),
+                derivative_filter_tau=0.15,
             ),
         }
 

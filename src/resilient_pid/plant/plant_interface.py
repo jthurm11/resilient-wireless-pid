@@ -195,6 +195,7 @@ class HardwarePlant(BasePlant):
     REG_TACH_LSB = 0x46
     REG_TACH_MSB = 0x47
     REG_FAN_CONFIG = 0x4A
+    REG_FAN_SPINUP = 0x4B
     REG_FAN_SETTING = 0x4C
     REG_PWM_FREQ = 0x4D
     REG_PWM_DIV = 0x4E
@@ -262,6 +263,7 @@ class HardwarePlant(BasePlant):
         try:
             cfg = self.bus.read_byte_data(self.emc_addr, self.REG_FAN_CONFIG)
             self.bus.write_byte_data(self.emc_addr, self.REG_FAN_CONFIG, cfg | 0x20)
+            self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SPINUP, 0x00)
             self.bus.write_byte_data(self.emc_addr, self.REG_PWM_FREQ, 0x1F)
             self.bus.write_byte_data(self.emc_addr, self.REG_PWM_DIV, 0x01)
             self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SETTING, 0x00)
@@ -600,7 +602,14 @@ def run_op_test(
                 pv = plant.step(u_cmd)
                 rpm = plant.read_tach_rpm()
 
-                transit_str = f"{(t_recv - t_send) * 1000.0:5.2f} ms" if t_send else "N/A"
+                # Check if clocks share epoch timestamps (time.time > 1e9)
+                if t_send and t_send > 1e9:
+                    epoch_now = time.time()
+                    transit_ms = (epoch_now - t_send) * 1000.0
+                    transit_str = f"{transit_ms:6.2f} ms (OWD)"
+                else:
+                    transit_str = "N/A (Monotonic Skew)"
+
                 tach_str = f"{rpm:6.1f} RPM" if rpm > 0.0 else "N/A"
 
                 logger.info(

@@ -24,7 +24,8 @@ class ResilientPID:
         kd: float = 0.06,
         dt: float = 0.05,
         output_limits: tuple[float, float] = (0.0, 100.0),
-        derivative_filter_tau: float = 0.02,
+        integral_limits: tuple[float, float] = (32.0, 65.0),
+        derivative_filter_tau: float = 0.15,
     ):
         """
         Initialize resilient observer gains, limits, and internal model states.
@@ -35,6 +36,7 @@ class ResilientPID:
             kd (float): Derivative gain.
             dt (float): Sampling period in seconds.
             output_limits (Tuple[float, float]): Output saturation limits (min, max).
+            integral_limits (Tuple[float, float]): Internal integrator saturation bounds (min, max).
             derivative_filter_tau (float): Time constant for derivative filter.
         """
         self.kp = kp
@@ -42,6 +44,7 @@ class ResilientPID:
         self.kd = kd
         self.dt = dt
         self.output_limits = output_limits
+        self.integral_limits = integral_limits
 
         # Primary baseline PID controller
         self.pid = DiscretePID(
@@ -50,6 +53,7 @@ class ResilientPID:
             kd=self.kd,
             dt=self.dt,
             output_limits=self.output_limits,
+            integral_limits=self.integral_limits,
             derivative_filter_tau=derivative_filter_tau,
         )
 

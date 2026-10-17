@@ -14,12 +14,13 @@ class DiscretePID:
 
     def __init__(
         self,
-        kp: float = 0.35,
+        kp: float = 0.45,
         ki: float = 0.12,
-        kd: float = 0.06,
+        kd: float = 0.10,
         dt: float = 0.05,
         output_limits: tuple[float, float] = (0.0, 100.0),
-        derivative_filter_tau: float = 0.02,
+        integral_limits: tuple[float, float] = (35.0, 75.0),
+        derivative_filter_tau: float = 0.15,
     ):
         """
         Initialize discrete PID gains and operational bounds.
@@ -30,6 +31,7 @@ class DiscretePID:
             kd (float): Derivative gain.
             dt (float): Sampling interval in seconds.
             output_limits (Tuple[float, float]): Output saturation bounds (min, max).
+            integral_limits (Tuple[float, float]): Internal integrator saturation bounds (min, max).
             derivative_filter_tau (float): Filter time constant for derivative term.
         """
         self.kp = kp
@@ -37,22 +39,24 @@ class DiscretePID:
         self.kd = kd
         self.dt = dt
         self.output_limits = output_limits
+        self.integral_limits = integral_limits
         self.tau = derivative_filter_tau
 
-        # State registers
-        self.integral = 0.0
-        self.prev_error = 0.0
+        # Pre-charge integrator to baseline levitation equilibrium
+        self.integral = 45.0
+        self.prev_pv: float | None = None
         self.filtered_derivative = 0.0
 
     def reset(self) -> None:
-        """Reset internal integrator, previous error, and derivative registers."""
-        self.integral = 0.0
-        self.prev_error = 0.0
+        """Reset internal integrator, previous PV, and derivative registers."""
+        self.integral = 45.0
+        self.prev_pv = None
         self.filtered_derivative = 0.0
 
     def update(self, setpoint: float, pv: float, is_loss: bool = False) -> float:
         """
         Calculate saturated discrete PID control output u[k].
+        Derivative on Measurement (PV) to eliminate setpoint derivative kick.
 
         Args:
             setpoint (float): Target reference value SP[k].
@@ -65,34 +69,31 @@ class DiscretePID:
         error = setpoint - pv
 
         if not is_loss:
-            # Forward Euler integral accumulation
-            self.integral += error * self.dt
+            # Forward Euler integration with bounded clamp
+            self.integral += self.ki * error * self.dt
+            i_min, i_max = self.integral_limits
+            self.integral = max(i_min, min(i_max, self.integral))
 
-            # First-order low-pass filtered derivative update
-            raw_derivative = (error - self.prev_error) / self.dt
+            # Derivative on Measurement (dPV/dt) with low-pass filtering
+            if self.prev_pv is None:
+                self.prev_pv = pv
+
+            delta_pv = pv - self.prev_pv
+            raw_d_pv = delta_pv / self.dt
             alpha = self.dt / (self.tau + self.dt)
-            self.filtered_derivative += alpha * (
-                raw_derivative - self.filtered_derivative
-            )
+            self.filtered_derivative += alpha * (raw_d_pv - self.filtered_derivative)
+            self.prev_pv = pv
 
-            self.prev_error = error
-
-        # Unclamped control effort summation
+        # Parallel form: u = Kp*e + I - Kd*(dPV/dt)
+        # Note: Derivative acts with negative feedback against positive PV growth
         u_unclamped = (
             (self.kp * error)
-            + (self.ki * self.integral)
-            + (self.kd * self.filtered_derivative)
+            + self.integral
+            - (self.kd * self.filtered_derivative)
         )
 
-        # Output saturation enforcement
+        # Output saturation
         u_min, u_max = self.output_limits
         u_clamped = max(u_min, min(u_max, u_unclamped))
-
-        # Anti-windup back-calculation to clamp runaway integration
-        if u_unclamped != u_clamped and self.ki > 0:
-            if (u_unclamped > u_max and error > 0) or (
-                u_unclamped < u_min and error < 0
-            ):
-                self.integral -= error * self.dt
 
         return u_clamped
