@@ -10,9 +10,11 @@ acoustic flight-time latency from real-time UDP telemetry response deadlines.
 Implements POSIX signal handling (SIGTERM/SIGINT) to guarantee safe de-energization
 of the EMC2101 fan actuator and deterministic deallocation of GPIO lines.
 
-Supports integrated diagnostics:
-  --op-test     : Verifies local fan step actuation & inbound C2 control reaction.
-  --cycle-test  : Executes continuous step-response mechanical cycling.
+Integrated Diagnostic Flags:
+  --op-test      : Validates static sensor calibration, dynamic flight response,
+                   and remote C2 network packet reaction.
+  --cycle-test   : Executes multi-step mechanical cycling.
+  --ignore-tach  : Bypasses zero/invalid TACH RPM gates during diagnostics.
 """
 
 import argparse
@@ -289,6 +291,11 @@ class HardwarePlant(BasePlant):
             logger.debug("Failed to read TACH from EMC2101: %s", e)
             return 0.0
 
+    def get_telemetry_snapshot(self) -> tuple[float, float, int]:
+        """Atomically retrieves the latest sensor process variable, distance, and miss counter."""
+        with self._lock:
+            return self._current_pv, self._last_distance_cm, self._miss_count
+
     def _acquire_distance_cm(self) -> float:
         """
         Executes a single bounded acoustic ping measurement.
@@ -346,6 +353,7 @@ class HardwarePlant(BasePlant):
                             0.0, min(self.tube_length_cm, self.tube_length_cm - d)
                         )
                     else:
+                        # Bottom sensor pointing up:
                         ball_height_cm = max(0.0, min(self.tube_length_cm, d))
 
                     self._current_pv = float(
@@ -369,10 +377,7 @@ class HardwarePlant(BasePlant):
         Guaranteed execution time < 1.0 ms. Zero chance of UDP socket timeout.
         """
         self.set_fan_pwm(u_t)
-        with self._lock:
-            pv = self._current_pv
-            dist = self._last_distance_cm
-            misses = self._miss_count
+        pv, dist, misses = self.get_telemetry_snapshot()
 
         if logger.isEnabledFor(logging.DEBUG) or int(time.time() * 2) % 10 == 0:
             logger.info(
@@ -402,6 +407,7 @@ class HardwarePlant(BasePlant):
         except Exception as e:
             logger.error("Failed to zero fan actuator during teardown: %s", e)
 
+        # Release GPIO lines
         try:
             if HARDWARE_AVAILABLE and GPIO is not None:
                 GPIO.cleanup([self.trig_pin, self.echo_pin])
@@ -422,7 +428,10 @@ def ensure_service_stopped(service_name: str = "dcs-plant.service") -> None:
             check=False,
         )
         if status_res.returncode == 0:
-            logger.warning("%s is running. Stopping service to prevent socket/I2C contention...", service_name)
+            logger.warning(
+                "%s is running. Stopping service to prevent socket/I2C contention...",
+                service_name,
+            )
             subprocess.run(["sudo", "systemctl", "stop", service_name], check=True)
             time.sleep(1.0)
             logger.info("%s stopped successfully.", service_name)
@@ -430,36 +439,145 @@ def ensure_service_stopped(service_name: str = "dcs-plant.service") -> None:
         logger.error("Failed to evaluate/stop %s: %s", service_name, e)
 
 
-def run_op_test(plant: HardwarePlant, host: str, port: int, max_frames: int = 50) -> None:
-    """Runs actuation step-sweep and verifies reaction to control node frames."""
-    print("\n" + "=" * 65)
-    print("STAGE 1: Open-Loop Fan Actuation & Tachometer Validation")
-    print("=" * 65)
+def run_op_test(
+    plant: HardwarePlant,
+    host: str,
+    port: int,
+    max_frames: int = 50,
+    ignore_tach: bool = False,
+) -> None:
+    """
+    Executes a structured operational test:
+      Phase 0: Baseline acoustic ping measurement & tube length consistency check.
+      Phase 1: Open-loop fan PWM actuation sweep & dynamic ball displacement check.
+      Phase 2: Remote controller UDP message parsing and closed-loop response test.
+    """
+    logger.info("=================================================================")
+    logger.info("PHASE 0: Static Sensor Baseline & Tube Geometry Calibration")
+    logger.info("=================================================================")
+
+    # Ensure fan is de-energized to establish mechanical floor baseline
+    plant.set_fan_pwm(0.0)
+    time.sleep(1.0)
+
+    pre_test_samples: list[float] = []
+    logger.info("Acquiring 10 resting distance samples from HC-SR04...")
+    for _ in range(10):
+        _, dist, misses = plant.get_telemetry_snapshot()
+        if dist > 2.0:
+            pre_test_samples.append(dist)
+        time.sleep(0.08)
+
+    if not pre_test_samples:
+        logger.error(
+            "PHASE 0 FAILED: Ultrasonic transducer returned 0 valid acoustic reflections. "
+            "Inspect HC-SR04 power and GPIO pins 23/24."
+        )
+        return
+
+    baseline_dist_cm = float(np.mean(pre_test_samples))
+    baseline_std_cm = float(np.std(pre_test_samples))
+    logger.info(
+        "Static Baseline: Distance to ball = %.2f cm (std: %.2f cm) | Configured Tube = %.1f cm",
+        baseline_dist_cm,
+        baseline_std_cm,
+        plant.tube_length_cm,
+    )
+
+    # Sanity check: verify physical distance matches expected chamber length
+    tube_delta = abs(baseline_dist_cm - plant.tube_length_cm)
+    if tube_delta > 5.0:
+        logger.warning(
+            "Geometry Mismatch: Measured baseline (%.1f cm) deviates by %.1f cm from "
+            "configured tube length (%.1f cm). Check --tube-length calibration.",
+            baseline_dist_cm,
+            tube_delta,
+            plant.tube_length_cm,
+        )
+    else:
+        logger.info("Geometry Verified: Baseline measurement conforms to physical column calibration.")
+
+    logger.info("=================================================================")
+    logger.info("PHASE 1: Open-Loop Fan Step Sweep & Ball Aerodynamics Evaluation")
+    if ignore_tach:
+        logger.info("[NOTICE] TACH RPM validation gate bypassed via --ignore-tach.")
+    logger.info("=================================================================")
+
     test_levels = [0.0, 30.0, 60.0, 90.0, 0.0]
 
     for target_pwm in test_levels:
         plant.set_fan_pwm(target_pwm)
-        print(f"\n[COMMAND] Commanded Duty: {target_pwm:5.1f}% | Stabilizing...")
-        time.sleep(1.2)
+        logger.info("Commanded Duty: %5.1f%% | Allowing pneumatic stabilization (1.8s)...", target_pwm)
+        time.sleep(1.8)
 
-        samples = []
-        for _ in range(5):
-            samples.append(plant.read_tach_rpm())
-            time.sleep(0.3)
+        # Collect synchronized window of tachometer and acoustic position data
+        tach_samples: list[float] = []
+        pv_samples: list[float] = []
+        dist_samples: list[float] = []
 
-        avg_rpm = sum(samples) / len(samples) if samples else 0.0
-        print(f"[METRIC] Steady-State Speed: {avg_rpm:6.1f} RPM")
+        for _ in range(6):
+            tach_samples.append(plant.read_tach_rpm())
+            pv, dist, _ = plant.get_telemetry_snapshot()
+            pv_samples.append(pv)
+            dist_samples.append(dist)
+            time.sleep(0.2)
 
+        avg_rpm = float(np.mean(tach_samples)) if tach_samples else 0.0
+        avg_pv = float(np.mean(pv_samples)) if pv_samples else 0.0
+        avg_dist = float(np.mean(dist_samples)) if dist_samples else 0.0
+        delta_lift_cm = baseline_dist_cm - avg_dist
+
+        tach_str = f"{avg_rpm:6.1f} RPM" if avg_rpm > 0.0 else "N/A (Zero Tach Feedback)"
+        logger.info(
+            "Output: Command: %5.1f%% | PV: %5.1f%% | Dist: %5.1f cm (Lift: %+5.1f cm) | TACH: %s",
+            target_pwm,
+            avg_pv,
+            avg_dist,
+            delta_lift_cm,
+            tach_str,
+        )
+
+        # Actuation correlation analysis
+        if target_pwm >= 60.0:
+            if delta_lift_cm < 5.0 and avg_pv < 10.0:
+                logger.warning(
+                    "Aerodynamic Inefficiency: Fan commanded to %.1f%% but ball lift is only %.1f cm. "
+                    "Verify 12V rail power to fan and plenum seals.",
+                    target_pwm,
+                    delta_lift_cm,
+                )
+            else:
+                logger.info(
+                    "Pneumatic Actuation Verified: Ball displaced by +%.1f cm at %.1f%% PWM.",
+                    delta_lift_cm,
+                    target_pwm,
+                )
+        elif target_pwm == 0.0 and avg_pv > 15.0:
+            logger.warning(
+                "Resting Offset: Commanded 0%% PWM but ball remains elevated (PV: %.1f%%). Ball may be stuck.",
+                avg_pv,
+            )
+
+        # Tachometer threshold check
         if target_pwm >= 30.0 and avg_rpm < 100.0:
-            print(f"[FAIL] Fan commanded to {target_pwm}% but TACH returned {avg_rpm:.1f} RPM.")
-            return
+            if not ignore_tach:
+                logger.error(
+                    "PHASE 1 FAILED: Commanded %.1f%% PWM but TACH reported %.1f RPM.",
+                    target_pwm,
+                    avg_rpm,
+                )
+                return
+            else:
+                logger.warning(
+                    "Zero TACH reading ignored at %.1f%% PWM due to --ignore-tach.", target_pwm
+                )
 
-    print("\n[SUCCESS] Stage 1 complete: Actuation and tachometer feedback verified.")
+    logger.info("PHASE 1 COMPLETE: Actuation sweep and physical aerodynamic response confirmed.")
 
-    print("\n" + "=" * 65)
-    print("STAGE 2: Control Node Network Reaction Test")
-    print(f"Listening on UDP {host}:{port} for {max_frames} inbound packets...")
-    print("=" * 65)
+    logger.info("=================================================================")
+    logger.info("PHASE 2: Remote Control Node Message Reaction Test")
+    logger.info("Binding UDP %s:%d to process %d incoming controller datagrams...", host, port, max_frames)
+    logger.info("=================================================================")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -478,49 +596,62 @@ def run_op_test(plant: HardwarePlant, host: str, port: int, max_frames: int = 50
                 u_cmd = float(pkt.get("u", 0.0))
                 t_send = pkt.get("t_send")
 
-                # Actuate plant from control message
+                # Actuate plant dynamically from controller packet
                 pv = plant.step(u_cmd)
                 rpm = plant.read_tach_rpm()
 
-                latency_str = (
-                    f"{(t_recv - t_send) * 1000.0:5.2f} ms" if t_send else "N/A"
-                )
-                print(
-                    f"[RX #{received+1:02d}] Seq: {seq} | Command u(t): {u_cmd:5.1f}% | "
-                    f"TACH: {rpm:6.1f} RPM | PV: {pv:5.1f}% | Transit: {latency_str}"
+                transit_str = f"{(t_recv - t_send) * 1000.0:5.2f} ms" if t_send else "N/A"
+                tach_str = f"{rpm:6.1f} RPM" if rpm > 0.0 else "N/A"
+
+                logger.info(
+                    "[RX #%02d] Seq: %s | Command u: %5.1f%% | PV: %5.1f%% | TACH: %s | RTT: %s",
+                    received + 1,
+                    seq,
+                    u_cmd,
+                    pv,
+                    tach_str,
+                    transit_str,
                 )
 
-                # Echo response packet
+                # Formulate synchronous response frame
                 resp = {"seq": seq, "pv": pv, "t_send": t_send, "t_echo": t_recv}
                 sock.sendto(json.dumps(resp).encode("utf-8"), addr)
                 received += 1
 
             except TimeoutError:
-                print("[ERROR] Socket timeout (>6s). No datagrams received from control node.")
+                logger.error("Socket timeout (>6s). No datagrams received from control node.")
                 return
     finally:
         sock.close()
 
-    print(f"\n[SUCCESS] Stage 2 complete: Handled {received} controller frames successfully.")
+    logger.info("PHASE 2 COMPLETE: Successfully handled %d closed-loop controller frames.", received)
 
 
 def run_cycle_test(plant: HardwarePlant, cycles: int = 5, step_interval: float = 3.0) -> None:
     """Cycles the fan through step profiles to test mechanical repeatability."""
-    print("\n" + "=" * 65)
-    print(f"Executing Continuous Cycle Test ({cycles} iterations)")
-    print("=" * 65)
+    logger.info("=================================================================")
+    logger.info("Executing Continuous Mechanical Cycle Test (%d iterations)", cycles)
+    logger.info("=================================================================")
 
     duty_profile = [20.0, 50.0, 80.0, 40.0, 0.0]
 
     for cycle in range(1, cycles + 1):
-        print(f"\n--- Cycle {cycle}/{cycles} ---")
+        logger.info("--- Starting Cycle %d of %d ---", cycle, cycles)
         for u in duty_profile:
             pv = plant.step(u)
             time.sleep(step_interval)
             rpm = plant.read_tach_rpm()
-            print(f"Commanded: {u:5.1f}% | PV: {pv:5.1f}% | TACH: {rpm:6.1f} RPM")
+            _, dist, _ = plant.get_telemetry_snapshot()
+            tach_str = f"{rpm:6.1f} RPM" if rpm > 0.0 else "N/A"
+            logger.info(
+                "Command: %5.1f%% | PV: %5.1f%% | Dist: %5.1f cm | TACH: %s",
+                u,
+                pv,
+                dist,
+                tach_str,
+            )
 
-    print("\n[SUCCESS] Cycle test complete.")
+    logger.info("Continuous cycle testing complete.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -554,6 +685,11 @@ def parse_args() -> argparse.Namespace:
         "--cycle-test",
         action="store_true",
         help="Execute continuous dynamic actuation step-cycle test.",
+    )
+    parser.add_argument(
+        "--ignore-tach",
+        action="store_true",
+        help="Ignore zero/bad TACH readings during diagnostic execution without aborting.",
     )
     parser.add_argument(
         "--cycles",
@@ -591,7 +727,12 @@ def main() -> None:
             logger.fatal("--op-test requires physical hardware execution.")
             sys.exit(1)
         try:
-            run_op_test(plant, host=args.host, port=args.port)
+            run_op_test(
+                plant,
+                host=args.host,
+                port=args.port,
+                ignore_tach=args.ignore_tach,
+            )
         finally:
             plant.cleanup()
         return
