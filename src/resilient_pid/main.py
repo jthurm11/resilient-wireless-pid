@@ -54,8 +54,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["baseline", "smith", "resilient"],
-        default="baseline",
+        choices=["discrete", "smith", "resilient"],
+        default="discrete",
         help="Control law architecture under evaluation",
     )
     parser.add_argument(
@@ -167,7 +167,7 @@ class ControllerRuntime:
         self.last_u = 45.0
 
         self.controllers: dict[str, ControllerType] = {
-            "baseline": DiscretePID(
+            "discrete": DiscretePID(
                 kp=self.kp,
                 ki=self.ki,
                 kd=self.kd,
@@ -312,7 +312,11 @@ class ControllerRuntime:
                         self.is_running = data.get("is_running", self.is_running)
                         self.trial_id = data.get("trial_id", self.trial_id)
                         mode_map = {
-                            "standard_pid": "baseline",
+                            "standard_pid": "discrete",
+                            "standard": "discrete",
+                            "baseline": "discrete",
+                            "discrete_pid": "discrete",
+                            "discrete": "discrete",
                             "smith_predictor": "smith",
                             "resilient_pid": "resilient",
                         }
@@ -354,7 +358,7 @@ class ControllerRuntime:
                 dt = self.dt
                 trial = self.trial_id
 
-            controller = self.controllers.get(active_mode, self.controllers["baseline"])
+            controller = self.controllers.get(active_mode, self.controllers["discrete"])
             is_loss = False
             rtt_ms = None
             current_pv = self.last_known_pv
@@ -417,7 +421,6 @@ class ControllerRuntime:
                                     rtt_ms = (t_rx - t_tx) * 1000.0
                                     break
                                 else:
-                                    # Demote nominal 1-tick late frames to DEBUG; keep severe out-of-order as WARNING
                                     if delta == -1:
                                         logger.debug(
                                             "Stale frame drained: seq %d (window: %d)",

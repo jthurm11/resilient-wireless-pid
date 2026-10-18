@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-resilient_pid.py
+src/resilient_pid/controller/resilient_pid.py
 Resilient predictive observer PID controller for mitigating packet dropouts.
 Executes recursive ARX state estimation and integral freezing during loss events.
 """
@@ -46,7 +46,7 @@ class ResilientPID:
         self.output_limits = output_limits
         self.integral_limits = integral_limits
 
-        # Primary baseline PID controller
+        # Primary discrete PID controller
         self.pid = DiscretePID(
             kp=self.kp,
             ki=self.ki,

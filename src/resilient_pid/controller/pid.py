@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-pid.py
+src/resilient_pid/controller/pid.py
 Discrete PID controller with anti-windup clamping and derivative filtering.
-Provides baseline actuation and integral hold logic for loss events.
+Provides primary (discrete) actuation and integral hold logic for loss events.
 """
 
 

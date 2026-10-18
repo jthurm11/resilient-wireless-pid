@@ -55,7 +55,17 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed", "fixedColor": "purple" },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "discrete": { "text": "Discrete PID", "color": "purple", "index": 0 },
+                "baseline": { "text": "Discrete PID (Legacy)", "color": "purple", "index": 1 },
+                "smith": { "text": "Smith Predictor", "color": "blue", "index": 2 },
+                "resilient": { "text": "Resilient Observer PID", "color": "green", "index": 3 }
+              }
+            }
+          ]
         }
       },
       "options": {

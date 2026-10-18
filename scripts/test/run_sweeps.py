@@ -2,7 +2,7 @@
 """
 scripts/test/run_sweeps.py
 Automated parameter sweep orchestrator and telemetry snapshot pipeline.
-Coordinates tc/netem kernel qdiscs, C2 REST states, and InfluxDB CSV exports.
+Coordinates tc/netem kernel qdiscs, C2 REST states, and standardized InfluxDB CSV exports.
 """
 
 import argparse
@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from typing import List
 
 import pandas as pd
 import requests
@@ -30,7 +31,7 @@ class TrialConfig:
     trial_id: str
     algorithm: str
     setpoint: float
-    netem_args: list[str]
+    netem_args: List[str]
     duration_sec: float
     export_filename: str
 
@@ -50,7 +51,7 @@ class TrafficController:
                 "tc cleanup notice (%s): %s", self.interface, res.stderr.strip()
             )
 
-    def apply_netem(self, netem_args: list[str]) -> None:
+    def apply_netem(self, netem_args: List[str]) -> None:
         """Attach configured netem qdisc rules to root egress."""
         self.clear_rules()
         cmd = [
@@ -84,18 +85,6 @@ class SweepOrchestrator:
         influx_bucket: str = os.getenv("INFLUXDB_BUCKET", "wireless_pid_metrics"),
         data_export_dir: str = "/opt/resilient-wireless-pid/data_exports",
     ):
-        """
-        Initialize orchestrator clients, endpoints, and storage targets.
-
-        Args:
-            interface (str): Network device interface for traffic shaping.
-            c2_url (str): Supervisory C2 HTTP REST endpoint base URL.
-            influx_url (str): InfluxDB v2 server address.
-            influx_token (str): InfluxDB organization authentication token.
-            influx_org (str): InfluxDB destination organization namespace.
-            influx_bucket (str): InfluxDB telemetry bucket name.
-            data_export_dir (str): Filesystem directory for persisting CSV snapshots.
-        """
         self.tc = TrafficController(interface)
         self.c2_url = c2_url.rstrip("/")
         self.influx_url = influx_url
@@ -138,7 +127,7 @@ class SweepOrchestrator:
             pass
 
     def export_trial_csv(self, trial_id: str, filename: str) -> None:
-        """Extract synchronized trial time-series from InfluxDB and save as CSV."""
+        """Extract synchronized trial time-series from InfluxDB and save as standardized CSV."""
         query_api = self.influx_client.query_api()
         flux_query = f"""
         from(bucket: "{self.influx_bucket}")
@@ -155,9 +144,15 @@ class SweepOrchestrator:
 
             target_path = os.path.join(self.data_export_dir, filename)
             if not df.empty:
+                if "algorithm" in df.columns:
+                    df["algorithm"] = df["algorithm"].replace({"baseline": "discrete"})
+
                 preferred_cols = [
                     "_time",
                     "trial_id",
+                    "tube_type",
+                    "tube_length_cm",
+                    "tube_inner_dia_mm",
                     "algorithm",
                     "setpoint",
                     "process_variable",
@@ -167,7 +162,8 @@ class SweepOrchestrator:
                     "is_loss",
                 ]
                 existing_cols = [c for c in preferred_cols if c in df.columns]
-                export_df = df[existing_cols] if existing_cols else df
+                extra_cols = [c for c in df.columns if c not in preferred_cols]
+                export_df = df[existing_cols + extra_cols]
                 export_df.to_csv(target_path, index=False)
                 logger.info("Exported %d records to %s", len(export_df), target_path)
             else:
@@ -197,63 +193,67 @@ class SweepOrchestrator:
 
     def _generate_trial_matrix(
         self, v1_dur: float, v2_dur: float, v3_dur: float
-    ) -> list[TrialConfig]:
-        """Pre-computes the entire experimental execution queue."""
-        trials = []
+    ) -> List[TrialConfig]:
+        """Pre-computes the entire experimental execution queue with standardized names."""
+        trials: List[TrialConfig] = []
+        batch_ts = time.strftime("%Y%m%d_%H%M%S")
 
-        # Vector 1: Dead-time sweeps
+        # Vector 1: Dead-time sweeps (discrete vs smith)
         for rtt_ms in range(10, 110, 10):
-            for algo in ["baseline", "smith"]:
-                t_id = f"sweep_deadtime_{algo}_{rtt_ms}ms_rtt"
-                fname = (
-                    f"control_law_comparison_{rtt_ms}ms_rtt.csv"
-                    if algo == "smith"
-                    else f"baseline_{rtt_ms}ms_rtt.csv"
-                )
+            for algo in ["discrete", "smith"]:
+                t_id = f"sweep_deadtime_{algo}_{rtt_ms}ms_rtt_{batch_ts}"
+                fname = f"deadtime_{algo}_{rtt_ms}ms_rtt_{batch_ts}.csv"
                 trials.append(
                     TrialConfig(
-                        t_id, algo, 50.0, ["delay", f"{rtt_ms // 2}ms"], v1_dur, fname
+                        trial_id=t_id,
+                        algorithm=algo,
+                        setpoint=50.0,
+                        netem_args=["delay", f"{rtt_ms // 2}ms"],
+                        duration_sec=v1_dur,
+                        export_filename=fname,
                     )
                 )
 
-        # Vector 2: Jitter distributions
+        # Vector 2: Stochastic jitter distributions (discrete, smith, resilient)
         jitter_profiles = [
             ("gaussian", ["delay", "40ms", "15ms", "distribution", "normal"]),
             ("pareto", ["delay", "40ms", "15ms", "distribution", "pareto"]),
         ]
         for name, args in jitter_profiles:
-            for algo in ["baseline", "smith", "resilient"]:
-                t_id = f"sweep_jitter_{name}_{algo}"
+            for algo in ["discrete", "smith", "resilient"]:
+                t_id = f"sweep_jitter_{name}_{algo}_{batch_ts}"
+                fname = f"trial_jitter_{name}_{algo}_{batch_ts}.csv"
                 trials.append(
                     TrialConfig(
-                        t_id,
-                        algo,
-                        50.0,
-                        args,
-                        v2_dur,
-                        f"trial_jitter_{name}_{algo}.csv",
+                        trial_id=t_id,
+                        algorithm=algo,
+                        setpoint=50.0,
+                        netem_args=args,
+                        duration_sec=v2_dur,
+                        export_filename=fname,
                     )
                 )
 
-        # Vector 3: Burst loss profiles
+        # Vector 3: Burst loss profiles (discrete vs resilient)
         for loss_pct in [2, 5, 10, 15, 20]:
-            for algo in ["baseline", "resilient"]:
-                t_id = f"sweep_burst_loss_{loss_pct}pct_{algo}"
+            for algo in ["discrete", "resilient"]:
+                t_id = f"sweep_burst_loss_{loss_pct}pct_{algo}_{batch_ts}"
+                fname = f"burst_loss_{loss_pct}pct_{algo}_{batch_ts}.csv"
                 trials.append(
                     TrialConfig(
-                        t_id,
-                        algo,
-                        50.0,
-                        ["loss", f"{loss_pct}%", "25%"],
-                        v3_dur,
-                        f"burst_loss_{loss_pct}pct_{algo}.csv",
+                        trial_id=t_id,
+                        algorithm=algo,
+                        setpoint=50.0,
+                        netem_args=["loss", f"{loss_pct}%", "25%"],
+                        duration_sec=v3_dur,
+                        export_filename=fname,
                     )
                 )
 
         return trials
 
     def execute_matrix(self, v1_dur: float, v2_dur: float, v3_dur: float) -> None:
-        """Execute automated benchmark sweeps with dynamic progress and ETA tracking."""
+        """Execute automated benchmark sweeps with dynamic ETA tracking."""
         trials = self._generate_trial_matrix(v1_dur, v2_dur, v3_dur)
         total_trials = len(trials)
         logger.info(
@@ -289,9 +289,6 @@ def prompt_and_execute_postprocessing() -> None:
     postprocess_script = os.path.normpath(
         os.path.join(current_dir, "..", "analysis", "aggregate_and_postprocess.py")
     )
-
-    # Construct the manual fallback command
-    # (Extracting a clean relative path for display purposes if run from repo root)
     display_path = (
         os.path.relpath(postprocess_script)
         if "resilient-wireless-pid" in current_dir
@@ -318,7 +315,7 @@ def prompt_and_execute_postprocessing() -> None:
     except subprocess.CalledProcessError as e:
         logger.error("Post-processing script failed with exit code %d.", e.returncode)
     except KeyboardInterrupt:
-        print()  # Catch ctrl+c during the input prompt gracefully
+        print()
         logger.info(
             "Post-processing aborted. To run manually later, execute:\n\t%s", manual_cmd
         )
@@ -340,7 +337,6 @@ def parse_args() -> argparse.Namespace:
         default="http://127.0.0.1:5050",
         help="Supervisory C2 REST API endpoint",
     )
-    # Dynamic duration controls
     parser.add_argument(
         "--duration",
         type=float,
@@ -372,7 +368,6 @@ def main() -> None:
     args = parse_args()
     orchestrator = SweepOrchestrator(interface=args.interface, c2_url=args.c2_url)
 
-    # If --duration is specified, it strictly overrides all vector configurations.
     if args.duration is not None:
         v1_dur = args.duration
         v2_dur = args.duration
@@ -412,7 +407,6 @@ def main() -> None:
         if sweep_completed_successfully:
             prompt_and_execute_postprocessing()
         else:
-            # If aborted, provide the manual command to aggregate any partial trial CSVs generated so far.
             current_dir = os.path.dirname(os.path.abspath(__file__))
             postprocess_script = os.path.normpath(
                 os.path.join(
@@ -424,7 +418,6 @@ def main() -> None:
                 if "resilient-wireless-pid" in current_dir
                 else postprocess_script
             )
-
             logger.info(
                 "Execution was aborted. If you wish to aggregate partial data, manually execute:\n\tpython3 %s",
                 display_path,

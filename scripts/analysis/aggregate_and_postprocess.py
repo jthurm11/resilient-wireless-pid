@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
 scripts/analysis/aggregate_and_postprocess.py
-Post-processing and data aggregation pipeline for empirical sweeps.
-Consolidates raw trial CSV snapshots, infers sweep start timestamps from telemetry,
-tags execution environments and distribution profiles, derives relative trajectories,
-and partitions output datasets by experimental impairment vector.
+Post-processing and empirical data aggregation pipeline for Distributed Control Systems.
+Consolidates raw trial CSV snapshots, infers run timestamps, guarantees mechanical plant
+geometry schemas, derives loop execution deltas, and partitions datasets by experimental vector.
 """
 
 import argparse
@@ -12,7 +11,7 @@ import glob
 import logging
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -24,7 +23,7 @@ logger = logging.getLogger("PostProcessing")
 # Canonical Plant Geometric Specifications
 PLANT_GEOMETRY_REGISTRY = {
     "acrylic": {
-        "tube_length_cm": 45.72,  # 18.0 inches canonical baseline
+        "tube_length_cm": 45.72,  # 18.0 inches canonical reference
         "tube_inner_dia_mm": 51.0,  # 51 mm ID
         "tube_outer_dia_mm": 55.0,  # 55 mm OD
     },
@@ -57,9 +56,7 @@ def parse_distribution_type(trial_id: str) -> str:
 
 
 def resolve_tube_type(df: pd.DataFrame, default_tube: str) -> str:
-    """
-    Infer tube type from DataFrame content, trial identifiers, or fallback default.
-    """
+    """Infer tube type from DataFrame content, trial identifiers, or fallback default."""
     if "tube_type" in df.columns and not df["tube_type"].dropna().empty:
         return str(df["tube_type"].dropna().iloc[0]).strip().lower()
 
@@ -76,30 +73,32 @@ def postprocess_trial_dataframe(
     df: pd.DataFrame, default_env: str, default_tube: str = "acrylic"
 ) -> pd.DataFrame:
     """
-    Apply signal sanitization, relative timing, physical geometry tagging,
-    and loop execution delta calculations.
+    Sanitize signals, harmonize naming conventions, compute relative timing and
+    execution deltas, and attach mechanical plant geometry.
     """
     if df.empty:
         return df
 
-    # Drop internal InfluxDB query boundaries and engine metadata fields
+    # Drop internal InfluxDB metadata
     drop_candidates = ["_start", "_stop", "_measurement", "result", "table"]
     cols_to_drop = [c for c in drop_candidates if c in df.columns]
     if cols_to_drop:
         df = df.drop(columns=cols_to_drop)
 
-    # Convert RFC-3339 timestamps and enforce strict monotonic order per trial
+    # Harmonize algorithm naming convention: replace baseline -> discrete
+    if "algorithm" in df.columns:
+        df["algorithm"] = df["algorithm"].replace({"baseline": "discrete"})
+
+    # Convert RFC-3339 timestamps and enforce monotonic order
     if "_time" in df.columns:
         df["_time"] = pd.to_datetime(df["_time"], utc=True, format="ISO8601")
         sort_keys = [k for k in ["trial_id", "_time"] if k in df.columns]
         df = df.sort_values(by=sort_keys).reset_index(drop=True)
 
-        # Compute relative elapsed seconds t_rel (t - t0) per trial
         if "trial_id" in df.columns:
             df["t_rel_s"] = df.groupby("trial_id")["_time"].transform(
                 lambda s: (s - s.iloc[0]).dt.total_seconds()
             )
-            # Compute empirical inter-sample loop execution delta dt_exec_ms (Nominal: 50.0 ms)
             df["dt_exec_ms"] = (
                 df.groupby("trial_id")["_time"].diff().dt.total_seconds() * 1000.0
             )
@@ -107,10 +106,9 @@ def postprocess_trial_dataframe(
             df["t_rel_s"] = (df["_time"] - df["_time"].iloc[0]).dt.total_seconds()
             df["dt_exec_ms"] = df["_time"].diff().dt.total_seconds() * 1000.0
 
-        # Fill first sample difference with nominal loop period (50 ms)
         df["dt_exec_ms"] = df["dt_exec_ms"].fillna(50.0)
 
-    # Resolve and tag mechanical plant geometry
+    # Resolve mechanical plant geometry
     resolved_tube = resolve_tube_type(df, default_tube)
     geometry_specs = PLANT_GEOMETRY_REGISTRY.get(
         resolved_tube, PLANT_GEOMETRY_REGISTRY["acrylic"]
@@ -124,17 +122,15 @@ def postprocess_trial_dataframe(
     if "tube_outer_dia_mm" not in df.columns:
         df["tube_outer_dia_mm"] = geometry_specs["tube_outer_dia_mm"]
 
-    # Parse stochastic jitter distribution profile
+    # Stochastic distribution profile
     if "trial_id" in df.columns:
         df["distribution"] = df["trial_id"].apply(parse_distribution_type)
     else:
         df["distribution"] = "none"
 
-    # Apply target execution environment tag (bare_metal, docker, proxmox_lxc)
     if "environment" not in df.columns:
         df["environment"] = default_env
 
-    # Enforce standard scientific column hierarchy
     core_order = [
         "_time",
         "t_rel_s",
@@ -161,10 +157,7 @@ def postprocess_trial_dataframe(
 
 
 def infer_execution_timestamp(dfs: List[pd.DataFrame], files: List[str]) -> str:
-    """
-    Infer run timestamp from the earliest recorded telemetry sample in the batch.
-    Falls back to the oldest POSIX file modification time if _time is missing or invalid.
-    """
+    """Infer batch timestamp from earliest telemetry sample; fallback to filesystem mtime."""
     min_times = []
     for df in dfs:
         if "_time" in df.columns and not df.empty:
@@ -178,7 +171,6 @@ def infer_execution_timestamp(dfs: List[pd.DataFrame], files: List[str]) -> str:
         logger.info("Inferred sweep execution timestamp from telemetry: %s", inferred)
         return inferred
 
-    # Fallback to filesystem mtime
     oldest_mtime = min(os.path.getmtime(f) for f in files)
     fallback_dt = pd.to_datetime(oldest_mtime, unit="s", utc=True)
     fallback_str = fallback_dt.strftime("%Y%m%d_%H%M%S")
@@ -193,21 +185,22 @@ def process_exports(
     tube_type: str = "acrylic",
     override_timestamp: Optional[str] = None,
 ) -> Dict[str, str]:
-    """
-    Aggregate raw trial CSV exports into partitioned, vector-specific research datasets.
-    """
+    """Aggregate raw trial CSV exports into partitioned experimental datasets."""
     os.makedirs(output_dir, exist_ok=True)
 
+    # Manifest matches both legacy artifacts and standardized filenames
     vector_manifest = {
         "vector0_dynamic_baselines": [
             os.path.join(raw_dir, "dynamic_baseline_*.csv"),
         ],
         "vector1_deadtime_sweeps": [
-            os.path.join(raw_dir, "baseline_*ms_rtt.csv"),
-            os.path.join(raw_dir, "control_law_comparison_*ms_rtt.csv"),
+            os.path.join(raw_dir, "deadtime_*.csv"),
+            os.path.join(raw_dir, "baseline_*ms_rtt*.csv"),
+            os.path.join(raw_dir, "control_law_comparison_*ms_rtt*.csv"),
         ],
         "vector2_stochastic_jitter": [
             os.path.join(raw_dir, "trial_jitter_*.csv"),
+            os.path.join(raw_dir, "jitter_*.csv"),
         ],
         "vector3_burst_loss": [
             os.path.join(raw_dir, "burst_loss_*.csv"),
@@ -238,9 +231,7 @@ def process_exports(
                 logger.error("Failed to read raw CSV snapshot %s: %s", f, err)
 
         if not valid_dfs:
-            logger.warning(
-                "All matched files for %s were empty or unreadable.", vector_name
-            )
+            logger.warning("All matched files for %s were empty or unreadable.", vector_name)
             continue
 
         ts_tag = override_timestamp or infer_execution_timestamp(valid_dfs, valid_files)
@@ -284,7 +275,7 @@ def main() -> None:
         "--environment",
         type=str,
         default=os.getenv("DCS_ENV", "docker"),
-        help="Execution target environment (bare_metal, docker, proxmox_lxc)",
+        help="Execution target environment (hardware_rpi, docker, proxmox_lxc)",
     )
     parser.add_argument(
         "--tube-type",

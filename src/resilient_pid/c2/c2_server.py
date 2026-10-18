@@ -26,7 +26,7 @@ app = Flask(__name__)
 system_state = {
     "is_running": False,
     "trial_id": f"trial_{int(time.time())}",
-    "algorithm": "baseline",  # baseline | smith | resilient
+    "algorithm": "discrete",  # discrete | smith | resilient
     "setpoint": 50.0,  # Target process variable (0-100%)
     "active_profile": "nominal",
     "ui_enabled": False,  # Dynamic UI toggle

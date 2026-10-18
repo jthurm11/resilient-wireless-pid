@@ -2,6 +2,7 @@
 """
 scripts/test/run_baselines.py
 Empirical Dynamic Baseline Pipeline with Automated Pre-Flight Runway.
+Executes unperturbed step-response sequences across target control algorithms.
 """
 
 import argparse
@@ -10,6 +11,8 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
+from typing import List
+
 import pandas as pd
 import requests
 from influxdb_client import InfluxDBClient
@@ -19,6 +22,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BaselineRunner")
 
+
 @dataclass
 class StepPhase:
     """Discrete setpoint phase within a multi-step dynamic trial."""
@@ -26,17 +30,19 @@ class StepPhase:
     setpoint: float
     duration_sec: float
 
+
 @dataclass
 class BaselineTrialConfig:
-    """Execution manifest for an isolated baseline trial."""
+    """Execution manifest for an isolated dynamic baseline trial."""
 
     trial_id: str
     algorithm: str
     tube_type: str
     tube_length_cm: float
     tube_inner_dia_mm: float
-    phases: list[StepPhase]
+    phases: List[StepPhase]
     export_filename: str
+
 
 class TrafficController:
     """Manages Linux kernel tc/netem queuing disciplines to guarantee zero impairment."""
@@ -52,6 +58,7 @@ class TrafficController:
             logger.debug("tc cleanup (%s): %s", self.interface, res.stderr.strip())
         else:
             logger.info("Kernel netem cleared on %s: Baseline line-rate active.", self.interface)
+
 
 class BaselineOrchestrator:
     """Coordinates empirical baseline step-response trials."""
@@ -115,18 +122,17 @@ class BaselineOrchestrator:
         logger.info(">>> ENGAGING PRE-FLIGHT RUNWAY (%.1fs) | Target SP: %.1f%% <<<", runway_sec, initial_sp)
         self.tc.clear_rules()
 
-        # Step 1: High feedforward kick (5s) to overcome mechanical stiction and impeller inertia
-        logger.info("[Pre-Flight] Kicking blower impellers to establish positive draft...")
-        self.set_c2_state(algorithm="baseline", setpoint=initial_sp, trial_id="runway_spoolup")
-        
-        # Step 2: Allow ball to capture hover and settle
+        # Feedforward spool-up using discrete PID
+        logger.info("[Pre-Flight] Spooling impellers to establish positive draft...")
+        self.set_c2_state(algorithm="discrete", setpoint=initial_sp, trial_id="runway_spoolup")
+
         remaining_runway = max(1.0, runway_sec - 5.0)
         logger.info("[Pre-Flight] Ball airborne; stabilizing at SP=%.1f%% for %.1fs...", initial_sp, remaining_runway)
         time.sleep(remaining_runway)
         logger.info(">>> PRE-FLIGHT COMPLETE: Plant at steady-state hover. Transitioning to formal trial. <<<")
 
     def export_trial_csv(self, config: BaselineTrialConfig) -> None:
-        """Queries InfluxDB for trial metrics and exports a populated CSV."""
+        """Queries InfluxDB for trial metrics and exports a populated CSV snapshot."""
         query_api = self.influx_client.query_api()
         flux_query = f"""
         from(bucket: "{self.influx_bucket}")
@@ -143,7 +149,13 @@ class BaselineOrchestrator:
 
             target_path = os.path.join(self.data_export_dir, config.export_filename)
             if not df.empty:
-                # Plant metadata
+                # Harmonize algorithm name within telemetry snapshot
+                if "algorithm" in df.columns:
+                    df["algorithm"] = df["algorithm"].replace({"baseline": "discrete"})
+                else:
+                    df["algorithm"] = config.algorithm
+
+                # Plant and geometry metadata
                 df["tube_type"] = config.tube_type
                 df["tube_length_cm"] = config.tube_length_cm
                 df["tube_inner_dia_mm"] = config.tube_inner_dia_mm
@@ -180,7 +192,6 @@ class BaselineOrchestrator:
     def execute_dynamic_trial(self, config: BaselineTrialConfig, runway_duration: float = 30.0) -> None:
         """Executes a dynamic step sequence with pre-flight stabilization."""
         try:
-            # Engage runway to float ball before logging trial data
             initial_sp = config.phases[0].setpoint
             self.run_preflight_runway(initial_sp=initial_sp, runway_sec=runway_duration)
 
@@ -191,7 +202,6 @@ class BaselineOrchestrator:
                 config.algorithm,
             )
 
-            # Execute deterministic step phases
             for idx, phase in enumerate(config.phases, start=1):
                 logger.info(
                     "[Phase %d/%d] Step Target: %.1f%% | Duration: %.1fs",
@@ -213,16 +223,12 @@ class BaselineOrchestrator:
             self.stop_c2_actuation()
             self.tc.clear_rules()
 
-        time.sleep(2.0)  # Telemetry flush allowance
+        time.sleep(2.0)  # Telemetry write flush window
         self.export_trial_csv(config)
 
 
-def get_step_profile(tube_type: str, total_duration: float) -> list[StepPhase]:
-    """
-    Constructs multi-step excitation patterns based on physical operating limits.
-    Cardboard is restricted to [70.0, 91.0] to avoid sensor bounce and back-pressure locks.
-    Acrylic / Simulated tubes utilize a broader [25.0, 80.0] envelope.
-    """
+def get_step_profile(tube_type: str, total_duration: float) -> List[StepPhase]:
+    """Generates operating step profiles matched to tube aerodynamic limits."""
     if tube_type == "cardboard":
         setpoints = [72.0, 82.0, 90.0, 75.0, 85.0]
     else:
@@ -239,7 +245,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--algorithm",
         type=str,
-        choices=["all", "baseline", "smith", "resilient"],
+        choices=["all", "discrete", "smith", "resilient"],
         default="all",
         help="Target control algorithm (default: all)",
     )
@@ -282,7 +288,7 @@ def main() -> None:
     orchestrator = BaselineOrchestrator(interface=args.interface, c2_url=args.c2_url)
 
     target_algos = (
-        ["baseline", "smith", "resilient"]
+        ["discrete", "smith", "resilient"]
         if args.algorithm == "all"
         else [args.algorithm]
     )
@@ -297,7 +303,7 @@ def main() -> None:
 
     try:
         for algo in target_algos:
-            trial_id = f"baseline_{args.tube_type}_{algo}_{session_ts}"
+            trial_id = f"dynamic_baseline_{args.tube_type}_{algo}_{session_ts}"
             export_filename = f"dynamic_baseline_{args.tube_type}_{algo}_{session_ts}.csv"
 
             config = BaselineTrialConfig(
@@ -319,6 +325,7 @@ def main() -> None:
         logger.error("Execution aborted: %s", err)
         orchestrator.stop_c2_actuation()
         orchestrator.tc.clear_rules()
+
 
 if __name__ == "__main__":
     main()

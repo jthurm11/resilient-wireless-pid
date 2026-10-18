@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-smith_predictor.py
+src/resilient_pid/controller/smith_predictor.py
 Discrete Smith Predictor engine for transport dead-time compensation.
 Decouples network latency from the closed-loop characteristic equation.
 """
@@ -51,7 +51,7 @@ class SmithPredictor:
         self.integral_limits = integral_limits
         self.plant_delay_ms = plant_delay_ms
 
-        # Embedded baseline controller
+        # Primary discrete controller
         self.pid = DiscretePID(
             kp=self.kp,
             ki=self.ki,
