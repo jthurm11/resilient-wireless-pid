@@ -231,7 +231,9 @@ def process_exports(
                 logger.error("Failed to read raw CSV snapshot %s: %s", f, err)
 
         if not valid_dfs:
-            logger.warning("All matched files for %s were empty or unreadable.", vector_name)
+            logger.warning(
+                "All matched files for %s were empty or unreadable.", vector_name
+            )
             continue
 
         ts_tag = override_timestamp or infer_execution_timestamp(valid_dfs, valid_files)

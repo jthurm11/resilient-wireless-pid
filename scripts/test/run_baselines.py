@@ -57,7 +57,9 @@ class TrafficController:
         if res.returncode != 0 and "No such file or directory" not in res.stderr:
             logger.debug("tc cleanup (%s): %s", self.interface, res.stderr.strip())
         else:
-            logger.info("Kernel netem cleared on %s: Baseline line-rate active.", self.interface)
+            logger.info(
+                "Kernel netem cleared on %s: Baseline line-rate active.", self.interface
+            )
 
 
 class BaselineOrchestrator:
@@ -119,17 +121,29 @@ class BaselineOrchestrator:
         Engages the blower on an unshaped link to spin up impellers and hover
         the ball at the initial setpoint prior to trial evaluation.
         """
-        logger.info(">>> ENGAGING PRE-FLIGHT RUNWAY (%.1fs) | Target SP: %.1f%% <<<", runway_sec, initial_sp)
+        logger.info(
+            ">>> ENGAGING PRE-FLIGHT RUNWAY (%.1fs) | Target SP: %.1f%% <<<",
+            runway_sec,
+            initial_sp,
+        )
         self.tc.clear_rules()
 
         # Feedforward spool-up using discrete PID
         logger.info("[Pre-Flight] Spooling impellers to establish positive draft...")
-        self.set_c2_state(algorithm="discrete", setpoint=initial_sp, trial_id="runway_spoolup")
+        self.set_c2_state(
+            algorithm="discrete", setpoint=initial_sp, trial_id="runway_spoolup"
+        )
 
         remaining_runway = max(1.0, runway_sec - 5.0)
-        logger.info("[Pre-Flight] Ball airborne; stabilizing at SP=%.1f%% for %.1fs...", initial_sp, remaining_runway)
+        logger.info(
+            "[Pre-Flight] Ball airborne; stabilizing at SP=%.1f%% for %.1fs...",
+            initial_sp,
+            remaining_runway,
+        )
         time.sleep(remaining_runway)
-        logger.info(">>> PRE-FLIGHT COMPLETE: Plant at steady-state hover. Transitioning to formal trial. <<<")
+        logger.info(
+            ">>> PRE-FLIGHT COMPLETE: Plant at steady-state hover. Transitioning to formal trial. <<<"
+        )
 
     def export_trial_csv(self, config: BaselineTrialConfig) -> None:
         """Queries InfluxDB for trial metrics and exports a populated CSV snapshot."""
@@ -185,11 +199,15 @@ class BaselineOrchestrator:
                     target_path,
                 )
             else:
-                logger.warning("Zero records for trial '%s'; CSV export skipped.", config.trial_id)
+                logger.warning(
+                    "Zero records for trial '%s'; CSV export skipped.", config.trial_id
+                )
         except Exception as err:
             logger.error("InfluxDB query failure for '%s': %s", config.trial_id, err)
 
-    def execute_dynamic_trial(self, config: BaselineTrialConfig, runway_duration: float = 30.0) -> None:
+    def execute_dynamic_trial(
+        self, config: BaselineTrialConfig, runway_duration: float = 30.0
+    ) -> None:
         """Executes a dynamic step sequence with pre-flight stabilization."""
         try:
             initial_sp = config.phases[0].setpoint
@@ -304,7 +322,9 @@ def main() -> None:
     try:
         for algo in target_algos:
             trial_id = f"dynamic_baseline_{args.tube_type}_{algo}_{session_ts}"
-            export_filename = f"dynamic_baseline_{args.tube_type}_{algo}_{session_ts}.csv"
+            export_filename = (
+                f"dynamic_baseline_{args.tube_type}_{algo}_{session_ts}.csv"
+            )
 
             config = BaselineTrialConfig(
                 trial_id=trial_id,

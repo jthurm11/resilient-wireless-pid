@@ -85,10 +85,14 @@ def run_client(
 
                 if echo_seq == seq:
                     received += 1
-                    logger.debug("RX Seq %d | PV: %.2f%% | RTT: %.3f ms", seq, pv, rtt_ms)
+                    logger.debug(
+                        "RX Seq %d | PV: %.2f%% | RTT: %.3f ms", seq, pv, rtt_ms
+                    )
                 else:
                     corrupted += 1
-                    logger.warning("Sequence mismatch: Expected %d, received %d", seq, echo_seq)
+                    logger.warning(
+                        "Sequence mismatch: Expected %d, received %d", seq, echo_seq
+                    )
 
             except (json.JSONDecodeError, KeyError) as err:
                 corrupted += 1
@@ -109,8 +113,14 @@ def run_client(
     total_test_dur = time.perf_counter() - t_start_test
 
     logger.info("=== Socket Probe Execution Summary ===")
-    logger.info("Dispatched: %d | Valid RX: %d | Dropped: %d (%.1f%%) | Corrupted: %d",
-                count, received, dropped, (dropped / count) * 100.0, corrupted)
+    logger.info(
+        "Dispatched: %d | Valid RX: %d | Dropped: %d (%.1f%%) | Corrupted: %d",
+        count,
+        received,
+        dropped,
+        (dropped / count) * 100.0,
+        corrupted,
+    )
     logger.info("Total Test Runtime: %.3f s", total_test_dur)
 
     if rtts_ms:
@@ -163,21 +173,32 @@ def run_mock_server(host: str, port: int) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Socket Smoke Test for Wireless PID Control Loop")
+    parser = argparse.ArgumentParser(
+        description="Socket Smoke Test for Wireless PID Control Loop"
+    )
     parser.add_argument(
-        "--mode", choices=["client", "mock-server"], default="client", help="Probe client or mock server"
+        "--mode",
+        choices=["client", "mock-server"],
+        default="client",
+        help="Probe client or mock server",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Plant node target IP")
     parser.add_argument("--port", type=int, default=5005, help="Target UDP port")
-    parser.add_argument("--count", type=int, default=50, help="Number of datagram probes")
-    parser.add_argument("--dt", type=float, default=0.05, help="Sampling delta in seconds (20 Hz)")
+    parser.add_argument(
+        "--count", type=int, default=50, help="Number of datagram probes"
+    )
+    parser.add_argument(
+        "--dt", type=float, default=0.05, help="Sampling delta in seconds (20 Hz)"
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     if args.mode == "client":
-        passed = run_client(host=args.host, port=args.port, count=args.count, dt=args.dt)
+        passed = run_client(
+            host=args.host, port=args.port, count=args.count, dt=args.dt
+        )
         sys.exit(0 if passed else 1)
     else:
         run_mock_server(host=args.host, port=args.port)

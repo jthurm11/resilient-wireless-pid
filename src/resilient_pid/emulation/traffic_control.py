@@ -52,11 +52,16 @@ class TrafficControlWrapper:
         cmd = ["sudo", "tc", "qdisc", "del", "dev", self.interface, "root"]
         try:
             self._run_cmd(cmd)
-            logger.info("Flushed root traffic control disciplines on %s.", self.interface)
+            logger.info(
+                "Flushed root traffic control disciplines on %s.", self.interface
+            )
             return True
         except Exception as e:
             if "Cannot find qdisc" in str(e) or "No such file or directory" in str(e):
-                logger.debug("Interface %s already unshaped (no root qdisc found).", self.interface)
+                logger.debug(
+                    "Interface %s already unshaped (no root qdisc found).",
+                    self.interface,
+                )
                 return True
             logger.error("Failed to clear rules on %s: %s", self.interface, e)
             return False
@@ -111,7 +116,9 @@ class TrafficControlWrapper:
                 cmd.append(f"{loss_correlation_pct}%")
 
         if delay_ms <= 0.0 and loss_pct <= 0.0:
-            logger.info("Zero impairment specified; %s remains unshaped.", self.interface)
+            logger.info(
+                "Zero impairment specified; %s remains unshaped.", self.interface
+            )
             return True
 
         try:
@@ -143,12 +150,20 @@ class TrafficControlWrapper:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Linux Traffic Control Utility")
-    parser.add_argument("--interface", default="lo", help="Target network interface (default: lo)")
+    parser.add_argument(
+        "--interface", default="lo", help="Target network interface (default: lo)"
+    )
     parser.add_argument("--delay", type=float, default=0.0, help="Latency in ms")
     parser.add_argument("--jitter", type=float, default=0.0, help="Jitter in ms")
-    parser.add_argument("--loss", type=float, default=0.0, help="Loss percentage (0-100)")
-    parser.add_argument("--dist", default="normal", choices=["normal", "pareto", "uniform"])
-    parser.add_argument("--clear", action="store_true", help="Flush all active qdisc rules")
+    parser.add_argument(
+        "--loss", type=float, default=0.0, help="Loss percentage (0-100)"
+    )
+    parser.add_argument(
+        "--dist", default="normal", choices=["normal", "pareto", "uniform"]
+    )
+    parser.add_argument(
+        "--clear", action="store_true", help="Flush all active qdisc rules"
+    )
     args = parser.parse_args()
 
     tc = TrafficControlWrapper(interface=args.interface)

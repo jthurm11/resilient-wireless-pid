@@ -48,7 +48,9 @@ def run_smoke_test(
     try:
         with InfluxDBClient(url=url, token=token, org=org, timeout=10_000) as client:
             write_api = client.write_api(write_options=SYNCHRONOUS)
-            logger.info("Streaming %d synthetic steps for trial '%s'...", steps, trial_id)
+            logger.info(
+                "Streaming %d synthetic steps for trial '%s'...", steps, trial_id
+            )
 
             for k in range(steps):
                 t_start = time.perf_counter()
@@ -81,7 +83,9 @@ def run_smoke_test(
                 sleep_time = max(0.0, dt - elapsed)
                 time.sleep(sleep_time)
 
-        logger.info("Ingestion completed successfully for %s (%d records).", trial_id, steps)
+        logger.info(
+            "Ingestion completed successfully for %s (%d records).", trial_id, steps
+        )
         return True
 
     except Exception as err:
@@ -90,9 +94,13 @@ def run_smoke_test(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Synthetic InfluxDB Ingestion Smoke Test")
+    parser = argparse.ArgumentParser(
+        description="Synthetic InfluxDB Ingestion Smoke Test"
+    )
     parser.add_argument(
-        "--url", default=os.getenv("INFLUXDB_URL", "http://localhost:8086"), help="InfluxDB endpoint"
+        "--url",
+        default=os.getenv("INFLUXDB_URL", "http://localhost:8086"),
+        help="InfluxDB endpoint",
     )
     parser.add_argument(
         "--token",
@@ -100,15 +108,21 @@ def parse_args() -> argparse.Namespace:
         help="Access token",
     )
     parser.add_argument(
-        "--org", default=os.getenv("INFLUXDB_ORG", "resilient_pid"), help="Target organization"
+        "--org",
+        default=os.getenv("INFLUXDB_ORG", "resilient_pid"),
+        help="Target organization",
     )
     parser.add_argument(
         "--bucket",
         default=os.getenv("INFLUXDB_BUCKET", "wireless_pid_metrics"),
         help="Target bucket",
     )
-    parser.add_argument("--steps", type=int, default=500, help="Number of telemetry steps")
-    parser.add_argument("--dt", type=float, default=0.02, help="Sample delta in seconds")
+    parser.add_argument(
+        "--steps", type=int, default=500, help="Number of telemetry steps"
+    )
+    parser.add_argument(
+        "--dt", type=float, default=0.02, help="Sample delta in seconds"
+    )
     return parser.parse_args()
 
 
