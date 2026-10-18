@@ -158,9 +158,12 @@ class ControllerRuntime:
         self.is_running = True
 
         # Validated gains for calibrated aerodynamic plant
-        self.kp = 0.40
-        self.ki = 0.10
-        self.kd = 0.16
+        self.kp = 0.35
+        self.ki = 0.08
+        self.kd = 0.12
+        self.filter_tau = 0.25
+        self.out_limits = (0.0, 100.0)
+        self.i_limits = (0.0, 85.0)
         self.seq_num = 0
         self.expected_rx_seq: int | None = None
         self.last_known_pv = 0.0
@@ -172,27 +175,27 @@ class ControllerRuntime:
                 ki=self.ki,
                 kd=self.kd,
                 dt=self.dt,
-                output_limits=(0.0, 100.0),
-                integral_limits=(35.0, 85.0),
-                derivative_filter_tau=0.15,
+                output_limits=self.out_limits,
+                integral_limits=self.i_limits,
+                derivative_filter_tau=self.filter_tau,
             ),
             "smith": SmithPredictor(
                 kp=self.kp,
                 ki=self.ki,
                 kd=self.kd,
                 dt=self.dt,
-                output_limits=(0.0, 100.0),
-                integral_limits=(35.0, 85.0),
-                derivative_filter_tau=0.15,
+                output_limits=self.out_limits,
+                integral_limits=self.i_limits,
+                derivative_filter_tau=self.filter_tau,
             ),
             "resilient": ResilientPID(
                 kp=self.kp,
                 ki=self.ki,
                 kd=self.kd,
                 dt=self.dt,
-                output_limits=(0.0, 100.0),
-                integral_limits=(35.0, 85.0),
-                derivative_filter_tau=0.15,
+                output_limits=self.out_limits,
+                integral_limits=self.i_limits,
+                derivative_filter_tau=self.filter_tau,
             ),
         }
 

@@ -22,13 +22,13 @@ class SmithPredictor:
     def __init__(
         self,
         kp: float = 0.35,
-        ki: float = 0.12,
-        kd: float = 0.06,
+        ki: float = 0.08,
+        kd: float = 0.12,
         dt: float = 0.05,
         plant_delay_ms: float = 100.0,
         output_limits: tuple[float, float] = (0.0, 100.0),
-        integral_limits: tuple[float, float] = (32.0, 65.0),
-        derivative_filter_tau: float = 0.02,
+        integral_limits: tuple[float, float] = (0.0, 85.0),
+        derivative_filter_tau: float = 0.25,
     ):
         """
         Initialize predictor gains, discrete model coefficients, and delay queue.

@@ -5,6 +5,8 @@ Discrete PID controller with anti-windup clamping and derivative filtering.
 Provides primary (discrete) actuation and integral hold logic for loss events.
 """
 
+from typing import Tuple
+
 
 class DiscretePID:
     """
@@ -14,13 +16,13 @@ class DiscretePID:
 
     def __init__(
         self,
-        kp: float = 0.45,
-        ki: float = 0.12,
-        kd: float = 0.10,
+        kp: float = 0.35,
+        ki: float = 0.08,
+        kd: float = 0.12,
         dt: float = 0.05,
         output_limits: tuple[float, float] = (0.0, 100.0),
-        integral_limits: tuple[float, float] = (35.0, 75.0),
-        derivative_filter_tau: float = 0.15,
+        integral_limits: tuple[float, float] = (0.0, 85.0),
+        derivative_filter_tau: float = 0.25,
     ):
         """
         Initialize discrete PID gains and operational bounds.
@@ -42,15 +44,15 @@ class DiscretePID:
         self.integral_limits = integral_limits
         self.tau = derivative_filter_tau
 
-        # Pre-charge integrator to baseline levitation equilibrium
-        self.integral = 45.0
+        # Pre-charge integrator near baseline float equilibrium
+        self.integral = 32.0
         self.prev_pv: float | None = None
         self.filtered_derivative = 0.0
 
     def reset(self) -> None:
         """Reset internal integrator, previous PV, and derivative registers."""
-        self.integral = 0.0
-        self.prev_pv = 0.0
+        self.integral = 32.0
+        self.prev_pv = None
         self.filtered_derivative = 0.0
 
     def update(self, setpoint: float, pv: float, is_loss: bool = False) -> float:
@@ -69,12 +71,7 @@ class DiscretePID:
         error = setpoint - pv
 
         if not is_loss:
-            # Forward Euler integration with bounded clamp
-            self.integral += self.ki * error * self.dt
-            i_min, i_max = self.integral_limits
-            self.integral = max(i_min, min(i_max, self.integral))
-
-            # Derivative on Measurement (dPV/dt) with low-pass filtering
+            # Low-pass filtered derivative on measurement (dPV/dt)
             if self.prev_pv is None:
                 self.prev_pv = pv
 
@@ -84,14 +81,26 @@ class DiscretePID:
             self.filtered_derivative += alpha * (raw_d_pv - self.filtered_derivative)
             self.prev_pv = pv
 
-        # Parallel form: u = Kp*e + I - Kd*(dPV/dt)
-        # Note: Derivative acts with negative feedback against positive PV growth
-        u_unclamped = (
-            (self.kp * error) + self.integral - (self.kd * self.filtered_derivative)
-        )
+            # Evaluate tentative unconstrained output
+            d_term = self.kd * self.filtered_derivative
+            u_tentative = (self.kp * error) + self.integral - d_term
 
-        # Output saturation
+            # Clamping Anti-Windup: only integrate if output is not saturated,
+            # or if integration acts to pull the output back inside limits
+            u_min, u_max = self.output_limits
+            if u_min < u_tentative < u_max:
+                self.integral += self.ki * error * self.dt
+            elif u_tentative >= u_max and error < 0:
+                self.integral += self.ki * error * self.dt
+            elif u_tentative <= u_min and error > 0:
+                self.integral += self.ki * error * self.dt
+
+            # Bound integral state accumulator
+            i_min, i_max = self.integral_limits
+            self.integral = max(i_min, min(i_max, self.integral))
+        else:
+            d_term = 0.0
+
+        u_unclamped = (self.kp * error) + self.integral - (self.kd * self.filtered_derivative)
         u_min, u_max = self.output_limits
-        u_clamped = max(u_min, min(u_max, u_unclamped))
-
-        return u_clamped
+        return max(u_min, min(u_max, u_unclamped))
