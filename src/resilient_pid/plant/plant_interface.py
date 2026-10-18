@@ -82,13 +82,15 @@ class SimulatedPlant(BasePlant):
     def __init__(
         self,
         dt: float = 0.05,
-        tube_length_m: float = 0.46,  # 45.72 cm physical acrylic tube
+        tube_length_m: float = 0.4572,  # 45.72cm physical acrylic tube
+        tube_type: str = "sim_lxc",
         ball_mass_kg: float = 0.0027,  # 2.7g standard ping pong ball
         ball_radius_m: float = 0.020,  # 40mm diameter
         g: float = 9.80665,
     ):
         self.dt = dt
         self.L_tube = tube_length_m
+        self.tube_type = tube_type
         self.m = ball_mass_kg
         self.r = ball_radius_m
         self.g = g
@@ -109,6 +111,19 @@ class SimulatedPlant(BasePlant):
         self.cor_bottom = 0.20
         self.cor_top = 0.25
         self.friction_coeff = 0.05
+
+        # Aerodynamic Software Twin Telemetry Log
+        logger.info(
+            "SimulatedPlant online: Column: %s (L=%.2f cm) | Solver: RK4 (dt=%.3fs) | Aero: rho=%.3f kg/m^3, Cd=%.2f, m=%.1fg | Vmax=%.1f m/s (tau=%.2fs)",
+            self.tube_type.upper(),
+            self.L_tube * 100.0,
+            self.dt,
+            self.rho,
+            self.cd,
+            self.m * 1000.0,
+            self.v_air_max,
+            self.tau_fan,
+        )
 
     def _dynamics(
         self, state: np.ndarray, u_clamped: float, turbulent_flow: float
@@ -207,6 +222,7 @@ class HardwarePlant(BasePlant):
         trig_pin: int = 23,
         echo_pin: int = 24,
         tube_length_cm: float = 45.72,
+        tube_type: str = "acrylic",
         sensor_at_top: bool = True,
         enable_sensor_thread: bool = True,
     ):
@@ -219,6 +235,7 @@ class HardwarePlant(BasePlant):
         self.trig_pin = trig_pin
         self.echo_pin = echo_pin
         self.tube_length_cm = tube_length_cm
+        self.tube_type = tube_type
         self.sensor_at_top = sensor_at_top
         self.enable_sensor_thread = enable_sensor_thread
 
@@ -247,15 +264,18 @@ class HardwarePlant(BasePlant):
             )
             self.worker_thread.start()
 
+        poll_mode_str = (
+            "Async-Thread (28.5Hz)" if self.enable_sensor_thread else "Synchronous"
+        )
         logger.info(
-            "HardwarePlant online: EMC2101 (0x%02X on I2C-%d) | HC-SR04 (TRIG=%d, ECHO=%d) | "
-            "Mounting: %s | Height: %.1f cm",
-            self.emc_addr,
-            i2c_bus,
+            "HardwarePlant online: Column: %s (L=%.2f cm) | Transducer: HC-SR04 (BCM %d/%d, BlindZone=2.0cm, %s) | Actuator: EMC2101 (0x%02X on I2C-%d, PWM=1.4kHz)",
+            self.tube_type.upper(),
+            self.tube_length_cm,
             self.trig_pin,
             self.echo_pin,
-            "TOP (Inverted)" if self.sensor_at_top else "BOTTOM (Direct)",
-            self.tube_length_cm,
+            poll_mode_str,
+            self.emc_addr,
+            i2c_bus,
         )
 
     def _init_emc2101(self) -> None:
