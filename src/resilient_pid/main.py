@@ -158,12 +158,14 @@ class ControllerRuntime:
         self.is_running = True
 
         # Validated gains for calibrated aerodynamic plant
-        self.kp = 0.35
-        self.ki = 0.08
-        self.kd = 0.12
-        self.filter_tau = 0.25
-        self.out_limits = (0.0, 100.0)
-        self.i_limits = (0.0, 85.0)
+        self.kp = 0.22
+        self.ki = 0.03
+        self.kd = 0.14
+        self.filter_tau = 0.35
+        ##self.out_limits = (0.0, 100.0)
+        self.out_limits = (18.0, 85.0)
+        self.i_limits = (18.0, 75.0)
+        ##self.i_limits = (0.0, 85.0)
         self.seq_num = 0
         self.expected_rx_seq: int | None = None
         self.last_known_pv = 0.0
