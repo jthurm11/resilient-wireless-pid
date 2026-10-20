@@ -18,7 +18,8 @@ from typing import Any, Protocol
 
 import requests
 
-from resilient_pid.controller.pid import DiscretePID
+from resilient_pid.controller.arx_model import ARXModelParams
+from resilient_pid.controller.pid import DiscretePID, PIDConfig
 from resilient_pid.controller.resilient_pid import ResilientPID
 from resilient_pid.controller.smith_predictor import SmithPredictor
 from resilient_pid.telemetry.influx_writer import InfluxWriter
@@ -157,49 +158,37 @@ class ControllerRuntime:
         )
         self.is_running = True
 
-        # Validated gains for calibrated aerodynamic plant
-        self.kp = 0.22
-        self.ki = 0.03
-        self.kd = 0.14
-        self.filter_tau = 0.35
-        ##self.out_limits = (0.0, 100.0)
-        self.out_limits = (18.0, 85.0)
-        self.i_limits = (18.0, 75.0)
-        ##self.i_limits = (0.0, 85.0)
+        # Centralized Single Source of Truth for Loop Gains & Model Parameters
+        self.loop_config = PIDConfig(dt=self.dt)
+        self.arx_params = ARXModelParams()
+
+        # Resolve expected transport dead time:
+        # In Docker / virtual testbeds, base transport latency is sub-millisecond (mean RTT < 1ms).
+        # We enforce 0.0ms nominal delay so the Smith Predictor does not introduce phantom delay steps.
+        # Under bare-metal execution, default to the calibrated physical Wi-Fi hop (~18ms).
+        is_virtual = (
+            self.args.mock_loop
+            or os.getenv("DCS_ENV") in ("docker", "proxmox_lxc")
+        )
+        nominal_delay_ms = 0.0 if is_virtual else 18.0
+
+        self.controllers: dict[str, ControllerType] = {
+            "discrete": DiscretePID(config=self.loop_config),
+            "smith": SmithPredictor(
+                config=self.loop_config,
+                model_params=self.arx_params,
+                plant_delay_ms=nominal_delay_ms,
+            ),
+            "resilient": ResilientPID(
+                config=self.loop_config,
+                model_params=self.arx_params,
+            ),
+        }
+
         self.seq_num = 0
         self.expected_rx_seq: int | None = None
         self.last_known_pv = 0.0
-        self.last_u = 45.0
-
-        self.controllers: dict[str, ControllerType] = {
-            "discrete": DiscretePID(
-                kp=self.kp,
-                ki=self.ki,
-                kd=self.kd,
-                dt=self.dt,
-                output_limits=self.out_limits,
-                integral_limits=self.i_limits,
-                derivative_filter_tau=self.filter_tau,
-            ),
-            "smith": SmithPredictor(
-                kp=self.kp,
-                ki=self.ki,
-                kd=self.kd,
-                dt=self.dt,
-                output_limits=self.out_limits,
-                integral_limits=self.i_limits,
-                derivative_filter_tau=self.filter_tau,
-            ),
-            "resilient": ResilientPID(
-                kp=self.kp,
-                ki=self.ki,
-                kd=self.kd,
-                dt=self.dt,
-                output_limits=self.out_limits,
-                integral_limits=self.i_limits,
-                derivative_filter_tau=self.filter_tau,
-            ),
-        }
+        self.last_u = self.loop_config.output_limits[0]
 
         self.lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -477,7 +466,10 @@ class ControllerRuntime:
                     setpoint=sp, pv=self.last_known_pv, is_loss=is_loss
                 )
             else:
-                u_t = controller.update(setpoint=sp, pv=self.last_known_pv)
+                # SmithPredictor accepts (setpoint, pv, is_loss)
+                u_t = controller.update(
+                    setpoint=sp, pv=self.last_known_pv, is_loss=is_loss
+                )
 
             self.last_u = u_t
             error = sp - self.last_known_pv
