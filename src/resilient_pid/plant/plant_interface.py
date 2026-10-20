@@ -38,10 +38,8 @@ logger = logging.getLogger("PlantInterface")
 
 # Canonical Column Dimensional Mapping
 TUBE_GEOMETRY_DEFAULTS = {
-    "acrylic": {"length_cm": 45.72, "id_mm": 51.0},
+    "acrylic": {"length_cm": 45.085, "id_mm": 51.0},
     "cardboard": {"length_cm": 78.0, "id_mm": 50.8},
-    "sim_lxc": {"length_cm": 45.72, "id_mm": 51.0},
-    "sim_docker": {"length_cm": 45.72, "id_mm": 51.0},
 }
 
 # Conditional import of physical hardware drivers
@@ -90,8 +88,8 @@ class SimulatedPlant(BasePlant):
     def __init__(
         self,
         dt: float = 0.05,
-        tube_length_m: float = 0.4572,  # 45.72 cm canonical acrylic column
-        tube_type: str = "sim_lxc",
+        tube_length_m: float = 0.45085,  # 45.085 cm acrylic column
+        tube_type: str = "acrylic",
         ball_mass_kg: float = 0.0027,  # 2.7g standard ping-pong ball
         ball_radius_m: float = 0.020,  # 40mm diameter
         g: float = 9.80665,
@@ -229,7 +227,7 @@ class HardwarePlant(BasePlant):
         emc2101_addr: int = 0x4C,
         trig_pin: int = 23,
         echo_pin: int = 24,
-        tube_length_cm: float = 45.72,
+        tube_length_cm: float = 45.085,
         tube_type: str = "acrylic",
         sensor_at_top: bool = True,
         enable_sensor_thread: bool = True,
@@ -715,7 +713,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tube-type",
-        choices=["acrylic", "cardboard", "sim_lxc", "sim_docker"],
+        choices=["acrylic", "cardboard"],
         default="acrylic",
         help="Physical column variant installed on the testbed (default: acrylic).",
     )
@@ -724,7 +722,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Calibrated physical column height in cm. If omitted, automatically resolves "
-        "to the default for --tube-type (acrylic: 45.72 cm, cardboard: 78.0 cm).",
+        "to the default for --tube-type (acrylic: 45.085 cm, cardboard: 78.0 cm).",
     )
 
     # Diagnostic mode arguments

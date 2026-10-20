@@ -10,7 +10,6 @@ import logging
 import shutil
 import subprocess
 import sys
-from typing import List
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -35,7 +34,7 @@ class TrafficControlWrapper:
                 "Binary 'tc' not found in PATH. Network emulation requires Linux with iproute2."
             )
 
-    def _run_cmd(self, cmd: List[str]) -> subprocess.CompletedProcess:
+    def _run_cmd(self, cmd: list[str]) -> subprocess.CompletedProcess:
         """Execute a shell command with captured standard streams and error handling."""
         try:
             logger.debug("Executing tc command: %s", " ".join(cmd))

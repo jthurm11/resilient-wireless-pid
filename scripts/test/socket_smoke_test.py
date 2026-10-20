@@ -18,7 +18,6 @@ import socket
 import statistics
 import sys
 import time
-from typing import List
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -53,7 +52,7 @@ def run_client(
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(timeout_sec)
 
-    rtts_ms: List[float] = []
+    rtts_ms: list[float] = []
     dropped: int = 0
     corrupted: int = 0
     received: int = 0

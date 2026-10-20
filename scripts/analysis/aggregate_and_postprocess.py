@@ -10,8 +10,6 @@ import argparse
 import glob
 import logging
 import os
-import re
-from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -23,7 +21,7 @@ logger = logging.getLogger("PostProcessing")
 # Canonical Plant Geometric Specifications
 PLANT_GEOMETRY_REGISTRY = {
     "acrylic": {
-        "tube_length_cm": 45.72,  # 18.0 inches canonical reference
+        "tube_length_cm": 45.085,  # 18.0 inches (17.75 measured) canonical reference
         "tube_inner_dia_mm": 51.0,  # 51 mm ID
         "tube_outer_dia_mm": 55.0,  # 55 mm OD
     },
@@ -31,16 +29,6 @@ PLANT_GEOMETRY_REGISTRY = {
         "tube_length_cm": 78.0,  # ~30.7 inches legacy delta
         "tube_inner_dia_mm": 50.8,  # ~2.0 inches ID
         "tube_outer_dia_mm": 54.0,  # Estimated wall thickness
-    },
-    "sim_docker": {
-        "tube_length_cm": 45.72,
-        "tube_inner_dia_mm": 51.0,
-        "tube_outer_dia_mm": 55.0,
-    },
-    "sim_lxc": {
-        "tube_length_cm": 45.72,
-        "tube_inner_dia_mm": 51.0,
-        "tube_outer_dia_mm": 55.0,
     },
 }
 
@@ -156,7 +144,7 @@ def postprocess_trial_dataframe(
     return df[ordered_cols]
 
 
-def infer_execution_timestamp(dfs: List[pd.DataFrame], files: List[str]) -> str:
+def infer_execution_timestamp(dfs: list[pd.DataFrame], files: list[str]) -> str:
     """Infer batch timestamp from earliest telemetry sample; fallback to filesystem mtime."""
     min_times = []
     for df in dfs:
@@ -183,8 +171,8 @@ def process_exports(
     output_dir: str,
     environment: str,
     tube_type: str = "acrylic",
-    override_timestamp: Optional[str] = None,
-) -> Dict[str, str]:
+    override_timestamp: str | None = None,
+) -> dict[str, str]:
     """Aggregate raw trial CSV exports into partitioned experimental datasets."""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -207,10 +195,10 @@ def process_exports(
         ],
     }
 
-    generated_files: Dict[str, str] = {}
+    generated_files: dict[str, str] = {}
 
     for vector_name, patterns in vector_manifest.items():
-        matched_files: List[str] = []
+        matched_files: list[str] = []
         for p in patterns:
             matched_files.extend(glob.glob(p))
         matched_files = sorted(list(set(matched_files)))
@@ -282,7 +270,7 @@ def main() -> None:
     parser.add_argument(
         "--tube-type",
         type=str,
-        choices=["acrylic", "cardboard", "sim_lxc", "sim_docker"],
+        choices=["acrylic", "cardboard"],
         default=os.getenv("DCS_TUBE", "acrylic"),
         help="Default mechanical column type (default: acrylic)",
     )
