@@ -12,7 +12,6 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import List
 
 import pandas as pd
 import requests
@@ -31,7 +30,7 @@ class TrialConfig:
     trial_id: str
     algorithm: str
     setpoint: float
-    netem_args: List[str]
+    netem_args: list[str]
     duration_sec: float
     export_filename: str
 
@@ -51,7 +50,7 @@ class TrafficController:
                 "tc cleanup notice (%s): %s", self.interface, res.stderr.strip()
             )
 
-    def apply_netem(self, netem_args: List[str]) -> None:
+    def apply_netem(self, netem_args: list[str]) -> None:
         """Attach configured netem qdisc rules to root egress."""
         self.clear_rules()
         cmd = [
@@ -193,9 +192,9 @@ class SweepOrchestrator:
 
     def _generate_trial_matrix(
         self, v1_dur: float, v2_dur: float, v3_dur: float
-    ) -> List[TrialConfig]:
+    ) -> list[TrialConfig]:
         """Pre-computes the entire experimental execution queue with standardized names."""
-        trials: List[TrialConfig] = []
+        trials: list[TrialConfig] = []
         batch_ts = time.strftime("%Y%m%d_%H%M%S")
 
         # Vector 1: Dead-time sweeps (discrete vs smith)

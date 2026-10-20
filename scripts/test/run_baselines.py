@@ -11,7 +11,6 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import List
 
 import pandas as pd
 import requests
@@ -40,7 +39,7 @@ class BaselineTrialConfig:
     tube_type: str
     tube_length_cm: float
     tube_inner_dia_mm: float
-    phases: List[StepPhase]
+    phases: list[StepPhase]
     export_filename: str
 
 
@@ -245,7 +244,7 @@ class BaselineOrchestrator:
         self.export_trial_csv(config)
 
 
-def get_step_profile(tube_type: str, total_duration: float) -> List[StepPhase]:
+def get_step_profile(tube_type: str, total_duration: float) -> list[StepPhase]:
     """Generates operating step profiles matched to tube aerodynamic limits."""
     if tube_type == "cardboard":
         setpoints = [72.0, 82.0, 90.0, 75.0, 85.0]
@@ -270,7 +269,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tube-type",
         type=str,
-        choices=["acrylic", "cardboard", "sim_lxc", "sim_docker"],
+        choices=["acrylic", "cardboard"],
         default="acrylic",
         help="Plant column type (default: acrylic)",
     )
@@ -314,7 +313,7 @@ def main() -> None:
     if args.tube_type == "cardboard":
         tube_length_cm, tube_inner_dia_mm = 78.0, 50.8
     else:
-        tube_length_cm, tube_inner_dia_mm = 45.72, 51.0
+        tube_length_cm, tube_inner_dia_mm = 45.085, 51.0
 
     phases = get_step_profile(tube_type=args.tube_type, total_duration=args.duration)
     session_ts = time.strftime("%Y%m%d_%H%M%S")
