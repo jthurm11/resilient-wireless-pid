@@ -5,7 +5,20 @@ Discrete PID controller with anti-windup clamping and derivative filtering.
 Provides primary (discrete) actuation and integral hold logic for loss events.
 """
 
-from typing import Tuple
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PIDConfig:
+    """Canonical loop gains, anti-windup saturation bounds, and filtering constants."""
+
+    kp: float = 0.22
+    ki: float = 0.03
+    kd: float = 0.14
+    dt: float = 0.05
+    output_limits: tuple[float, float] = (18.0, 85.0)
+    integral_limits: tuple[float, float] = (18.0, 75.0)
+    derivative_filter_tau: float = 0.35
 
 
 class DiscretePID:
@@ -14,16 +27,7 @@ class DiscretePID:
     Supports anti-windup clamping, low-pass derivative filtering, and freeze-on-loss.
     """
 
-    def __init__(
-        self,
-        kp: float = 0.35,
-        ki: float = 0.08,
-        kd: float = 0.12,
-        dt: float = 0.05,
-        output_limits: tuple[float, float] = (0.0, 100.0),
-        integral_limits: tuple[float, float] = (0.0, 85.0),
-        derivative_filter_tau: float = 0.25,
-    ):
+    def __init__(self, config: PIDConfig | None = None, **overrides):
         """
         Initialize discrete PID gains and operational bounds.
 
@@ -36,22 +40,24 @@ class DiscretePID:
             integral_limits (Tuple[float, float]): Internal integrator saturation bounds (min, max).
             derivative_filter_tau (float): Filter time constant for derivative term.
         """
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.dt = dt
-        self.output_limits = output_limits
-        self.integral_limits = integral_limits
-        self.tau = derivative_filter_tau
+
+        self.cfg = config or PIDConfig()
+        self.kp = overrides.get("kp", self.cfg.kp)
+        self.ki = overrides.get("ki", self.cfg.ki)
+        self.kd = overrides.get("kd", self.cfg.kd)
+        self.dt = overrides.get("dt", self.cfg.dt)
+        self.output_limits = overrides.get("output_limits", self.cfg.output_limits)
+        self.integral_limits = overrides.get("integral_limits", self.cfg.integral_limits)
+        self.tau = overrides.get("derivative_filter_tau", self.cfg.derivative_filter_tau)
 
         # Pre-charge integrator near baseline float equilibrium
-        self.integral = 32.0
+        self.integral = self.integral_limits[0]
         self.prev_pv: float | None = None
         self.filtered_derivative = 0.0
 
     def reset(self) -> None:
         """Reset internal integrator, previous PV, and derivative registers."""
-        self.integral = 32.0
+        self.integral = self.integral_limits[0]
         self.prev_pv = None
         self.filtered_derivative = 0.0
 
