@@ -227,7 +227,7 @@ class HardwarePlant(BasePlant):
         emc2101_addr: int = 0x4C,
         trig_pin: int = 23,
         echo_pin: int = 24,
-        tube_length_cm: float = 45.085,
+        tube_length_cm: float = 45.72,
         tube_type: str = "acrylic",
         sensor_at_top: bool = True,
         enable_sensor_thread: bool = True,
@@ -245,12 +245,19 @@ class HardwarePlant(BasePlant):
         self.sensor_at_top = sensor_at_top
         self.enable_sensor_thread = enable_sensor_thread
 
+        # Physical Calibration Constants
+        # d_min: Acoustic distance when ball apex touches top aperture (~1.5 cm)
+        # d_max: Acoustic distance when ball rests on bottom fan grille (~45.5 cm)
+        self.d_min_cm = 1.5
+        self.d_max_cm = self.tube_length_cm
+
         # Thread synchronization state
         self._lock = threading.Lock()
         self._current_pv: float = 0.0
-        self._last_distance_cm: float = 0.0
+        self._last_distance_cm: float = self.d_max_cm
         self._miss_count: int = 0
         self._running: bool = True
+        self._last_u_cmd: float = 0.0
 
         # Initialize EMC2101 over SMBus/I2C
         self.bus = smbus2.SMBus(i2c_bus)
@@ -275,12 +282,14 @@ class HardwarePlant(BasePlant):
         )
         logger.info(
             "HardwarePlant online: Column: %s (L=%.2f cm) | "
-            "Transducer: HC-SR04 (BCM %d/%d, BlindZone=2.0cm, %s) | "
+            "Transducer: HC-SR04 (BCM %d/%d, Calibration=[%.1f, %.1f] cm, %s) | "
             "Actuator: EMC2101 (0x%02X on I2C-%d, PWM=1.4kHz)",
             self.tube_type.upper(),
             self.tube_length_cm,
             self.trig_pin,
             self.echo_pin,
+            self.d_min_cm,
+            self.d_max_cm,
             poll_mode_str,
             self.emc_addr,
             i2c_bus,
@@ -302,6 +311,7 @@ class HardwarePlant(BasePlant):
     def set_fan_pwm(self, duty_percent: float) -> None:
         """Sets fan duty cycle [0.0 - 100.0] via 6-bit register (0-63)."""
         clamped = max(0.0, min(100.0, duty_percent))
+        self._last_u_cmd = clamped
         reg_value = int(round((clamped / 100.0) * 63.0))
         try:
             self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SETTING, reg_value)
@@ -362,7 +372,7 @@ class HardwarePlant(BasePlant):
         return (duration * 34300.0) / 2.0
 
     def _sensor_worker(self) -> None:
-        """Dedicated background thread polling HC-SR04 at ~25-30 Hz."""
+        """Dedicated background thread polling HC-SR04 with acoustic blind-zone mitigation."""
         while self._running:
             d = self._acquire_distance_cm()
 
@@ -372,19 +382,25 @@ class HardwarePlant(BasePlant):
                 d = self._acquire_distance_cm()
 
             with self._lock:
-                if 2.0 <= d <= (self.tube_length_cm + 5.0):
+                # Blind-zone ceiling lock detection:
+                # If sensor times out (d < 0) or reads extremely short distance (d < 2.0cm)
+                # while the fan duty cycle is high (u > 50%), the ball is pinned at the top aperture.
+                if (d < 2.0 or d < 0.0) and self._last_u_cmd > 50.0 and self._current_pv > 60.0:
+                    self._miss_count = 0
+                    self._last_distance_cm = self.d_min_cm
+                    self._current_pv = 100.0
+                elif 1.0 <= d <= (self.d_max_cm + 5.0):
                     self._miss_count = 0
                     self._last_distance_cm = d
-                    if self.sensor_at_top:
-                        ball_height_cm = max(
-                            0.0, min(self.tube_length_cm, self.tube_length_cm - d)
-                        )
-                    else:
-                        ball_height_cm = max(0.0, min(self.tube_length_cm, d))
 
-                    self._current_pv = float(
-                        (ball_height_cm / self.tube_length_cm) * 100.0
-                    )
+                    # Linear normalization across calibrated physical range [d_min, d_max]
+                    d_clamped = max(self.d_min_cm, min(self.d_max_cm, d))
+                    if self.sensor_at_top:
+                        pv_normalized = ((self.d_max_cm - d_clamped) / (self.d_max_cm - self.d_min_cm)) * 100.0
+                    else:
+                        pv_normalized = ((d_clamped - self.d_min_cm) / (self.d_max_cm - self.d_min_cm)) * 100.0
+
+                    self._current_pv = float(np.clip(pv_normalized, 0.0, 100.0))
                 else:
                     self._miss_count += 1
                     if self._miss_count % 20 == 0:
@@ -397,10 +413,6 @@ class HardwarePlant(BasePlant):
             time.sleep(0.035)
 
     def step(self, u_t: float) -> float:
-        """
-        Actuates EMC2101 fan duty cycle and immediately returns cached PV.
-        Guaranteed execution time < 1.0 ms. Zero chance of UDP socket timeout.
-        """
         self.set_fan_pwm(u_t)
         pv, dist, misses = self.get_telemetry_snapshot()
 
@@ -423,26 +435,18 @@ class HardwarePlant(BasePlant):
         if hasattr(self, "worker_thread") and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=0.3)
 
-        # Force duty cycle to 0.0% and release I2C handle
         try:
             if hasattr(self, "bus") and self.bus is not None:
                 self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SETTING, 0x00)
                 self.bus.close()
-                logger.info(
-                    "EMC2101 fan duty cycle zeroed (0x00) and SMBus handle closed."
-                )
+                logger.info("EMC2101 fan duty cycle zeroed and SMBus closed.")
         except Exception as e:
             logger.error("Failed to zero fan actuator during teardown: %s", e)
 
-        # Release GPIO lines
         try:
             if HARDWARE_AVAILABLE and GPIO is not None:
                 GPIO.cleanup([self.trig_pin, self.echo_pin])
-                logger.info(
-                    "GPIO lines released: TRIG=%d, ECHO=%d.",
-                    self.trig_pin,
-                    self.echo_pin,
-                )
+                logger.info("GPIO lines released: TRIG=%d, ECHO=%d.", self.trig_pin, self.echo_pin)
         except Exception as e:
             logger.error("Failed to release GPIO lines: %s", e)
 

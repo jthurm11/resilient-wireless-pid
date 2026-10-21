@@ -12,12 +12,12 @@ from dataclasses import dataclass
 class PIDConfig:
     """Canonical loop gains, anti-windup saturation bounds, and filtering constants."""
 
-    kp: float = 0.22
-    ki: float = 0.03
-    kd: float = 0.14
+    kp: float = 0.16
+    ki: float = 0.025
+    kd: float = 0.12
     dt: float = 0.05
-    output_limits: tuple[float, float] = (18.0, 85.0)
-    integral_limits: tuple[float, float] = (18.0, 75.0)
+    output_limits: tuple[float, float] = (0.0, 78.0)
+    integral_limits: tuple[float, float] = (0.0, 70.0)
     derivative_filter_tau: float = 0.35
 
 
