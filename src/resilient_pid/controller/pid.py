@@ -112,6 +112,8 @@ class DiscretePID:
         else:
             d_term = 0.0
 
-        u_unclamped = (self.kp * error) + self.integral - (self.kd * self.filtered_derivative)
+        u_unclamped = (
+            (self.kp * error) + self.integral - (self.kd * self.filtered_derivative)
+        )
         u_min, u_max = self.output_limits
         return float(max(u_min, min(u_max, u_unclamped)))

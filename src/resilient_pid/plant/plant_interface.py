@@ -396,7 +396,11 @@ class HardwarePlant(BasePlant):
                 # Blind-zone ceiling lock detection:
                 # If sensor times out (d < 0) or reads extremely short distance (d < 2.0cm)
                 # while the fan duty cycle is high (u > 50%), the ball is pinned at the top aperture.
-                if (d < 2.0 or d < 0.0) and self._last_u_cmd > 50.0 and self._current_pv > 60.0:
+                if (
+                    (d < 2.0 or d < 0.0)
+                    and self._last_u_cmd > 50.0
+                    and self._current_pv > 60.0
+                ):
                     self._miss_count = 0
                     self._last_distance_cm = self.d_min_cm
                     self._current_pv = 100.0
@@ -407,9 +411,15 @@ class HardwarePlant(BasePlant):
                     # Linear normalization across calibrated physical range [d_min, d_max]
                     d_clamped = max(self.d_min_cm, min(self.d_max_cm, d))
                     if self.sensor_at_top:
-                        pv_normalized = ((self.d_max_cm - d_clamped) / (self.d_max_cm - self.d_min_cm)) * 100.0
+                        pv_normalized = (
+                            (self.d_max_cm - d_clamped)
+                            / (self.d_max_cm - self.d_min_cm)
+                        ) * 100.0
                     else:
-                        pv_normalized = ((d_clamped - self.d_min_cm) / (self.d_max_cm - self.d_min_cm)) * 100.0
+                        pv_normalized = (
+                            (d_clamped - self.d_min_cm)
+                            / (self.d_max_cm - self.d_min_cm)
+                        ) * 100.0
 
                     self._current_pv = float(np.clip(pv_normalized, 0.0, 100.0))
                 else:
@@ -457,7 +467,11 @@ class HardwarePlant(BasePlant):
         try:
             if HARDWARE_AVAILABLE and GPIO is not None:
                 GPIO.cleanup([self.trig_pin, self.echo_pin])
-                logger.info("GPIO lines released: TRIG=%d, ECHO=%d.", self.trig_pin, self.echo_pin)
+                logger.info(
+                    "GPIO lines released: TRIG=%d, ECHO=%d.",
+                    self.trig_pin,
+                    self.echo_pin,
+                )
         except Exception as e:
             logger.error("Failed to release GPIO lines: %s", e)
 
@@ -880,7 +894,11 @@ def main() -> None:
 
             pv = plant.step(u_t)
             _, raw_dist_cm, _ = plant.get_telemetry_snapshot()
-            height_cm = effective_tube_length_cm - raw_dist_cm if args.sensor_at_top else raw_dist_cm
+            height_cm = (
+                effective_tube_length_cm - raw_dist_cm
+                if args.sensor_at_top
+                else raw_dist_cm
+            )
 
             # Augmented UDP payload with distance and physical height metrics
             resp = {

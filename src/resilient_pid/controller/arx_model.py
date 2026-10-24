@@ -10,6 +10,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class ARXModelParams:
     """Discrete 2nd-order ARX plant parameters calibrated at Ts = 50ms."""
+
     a1: float = -1.6705
     a2: float = 0.6967
     b1: float = 0.0142
@@ -43,7 +44,9 @@ class DiscreteARXModel:
         self.u_1 = u_k
         return self.y_1
 
-    def step_observer(self, u_k: float, y_measured: float, is_loss: bool = False) -> float:
+    def step_observer(
+        self, u_k: float, y_measured: float, is_loss: bool = False
+    ) -> float:
         """Propagates model with sensor resynchronization on packet reception."""
         y_curr = self.y_1 if is_loss else y_measured
         y_next = (

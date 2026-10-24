@@ -166,9 +166,9 @@ class ControllerRuntime:
         # In Docker / virtual testbeds, base transport latency is sub-millisecond (mean RTT < 1ms).
         # We enforce 0.0ms nominal delay so the Smith Predictor does not introduce phantom delay steps.
         # Under bare-metal execution, default to the calibrated physical Wi-Fi hop (~18ms).
-        is_virtual = (
-            self.args.mock_loop
-            or os.getenv("DCS_ENV") in ("docker", "proxmox_lxc")
+        is_virtual = self.args.mock_loop or os.getenv("DCS_ENV") in (
+            "docker",
+            "proxmox_lxc",
         )
         nominal_delay_ms = 0.0 if is_virtual else 18.0
 
@@ -441,7 +441,7 @@ class ControllerRuntime:
                             rtt_ms = None
 
                         if self.expected_rx_seq is not None:
-                                self.expected_rx_seq += 1
+                            self.expected_rx_seq += 1
                     else:
                         is_loss = True
                 except (

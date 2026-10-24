@@ -44,11 +44,15 @@ class ResilientPID:
         if not is_loss:
             self.consecutive_losses = 0
             u_t = self.pid.update(setpoint=setpoint, pv=measured_pv, is_loss=False)
-            self.y_est = self.model.step_observer(u_k=u_t, y_measured=measured_pv, is_loss=False)
+            self.y_est = self.model.step_observer(
+                u_k=u_t, y_measured=measured_pv, is_loss=False
+            )
         else:
             self.consecutive_losses += 1
             # Execute primary control on predicted process variable and freeze integrator
             u_t = self.pid.update(setpoint=setpoint, pv=self.y_est, is_loss=True)
-            self.y_est = self.model.step_observer(u_k=u_t, y_measured=self.y_est, is_loss=True)
+            self.y_est = self.model.step_observer(
+                u_k=u_t, y_measured=self.y_est, is_loss=True
+            )
 
         return u_t
