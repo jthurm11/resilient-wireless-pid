@@ -18,7 +18,8 @@ from typing import Any, Protocol
 
 import requests
 
-from resilient_pid.controller.pid import DiscretePID
+from resilient_pid.controller.arx_model import ARXModelParams
+from resilient_pid.controller.pid import DiscretePID, PIDConfig
 from resilient_pid.controller.resilient_pid import ResilientPID
 from resilient_pid.controller.smith_predictor import SmithPredictor
 from resilient_pid.telemetry.influx_writer import InfluxWriter
@@ -54,8 +55,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["baseline", "smith", "resilient"],
-        default="baseline",
+        choices=["discrete", "smith", "resilient"],
+        default="discrete",
         help="Control law architecture under evaluation",
     )
     parser.add_argument(
@@ -157,44 +158,37 @@ class ControllerRuntime:
         )
         self.is_running = True
 
-        # Validated gains for calibrated aerodynamic plant
-        self.kp = 0.40
-        self.ki = 0.10
-        self.kd = 0.16
+        # Centralized Single Source of Truth for Loop Gains & Model Parameters
+        self.loop_config = PIDConfig(dt=self.dt)
+        self.arx_params = ARXModelParams()
+
+        # Resolve expected transport dead time:
+        # In Docker / virtual testbeds, base transport latency is sub-millisecond (mean RTT < 1ms).
+        # We enforce 0.0ms nominal delay so the Smith Predictor does not introduce phantom delay steps.
+        # Under bare-metal execution, default to the calibrated physical Wi-Fi hop (~18ms).
+        is_virtual = self.args.mock_loop or os.getenv("DCS_ENV") in (
+            "docker",
+            "proxmox_lxc",
+        )
+        nominal_delay_ms = 0.0 if is_virtual else 18.0
+
+        self.controllers: dict[str, ControllerType] = {
+            "discrete": DiscretePID(config=self.loop_config),
+            "smith": SmithPredictor(
+                config=self.loop_config,
+                model_params=self.arx_params,
+                plant_delay_ms=nominal_delay_ms,
+            ),
+            "resilient": ResilientPID(
+                config=self.loop_config,
+                model_params=self.arx_params,
+            ),
+        }
+
         self.seq_num = 0
         self.expected_rx_seq: int | None = None
         self.last_known_pv = 0.0
-        self.last_u = 45.0
-
-        self.controllers: dict[str, ControllerType] = {
-            "baseline": DiscretePID(
-                kp=self.kp,
-                ki=self.ki,
-                kd=self.kd,
-                dt=self.dt,
-                output_limits=(0.0, 100.0),
-                integral_limits=(35.0, 85.0),
-                derivative_filter_tau=0.15,
-            ),
-            "smith": SmithPredictor(
-                kp=self.kp,
-                ki=self.ki,
-                kd=self.kd,
-                dt=self.dt,
-                output_limits=(0.0, 100.0),
-                integral_limits=(35.0, 85.0),
-                derivative_filter_tau=0.15,
-            ),
-            "resilient": ResilientPID(
-                kp=self.kp,
-                ki=self.ki,
-                kd=self.kd,
-                dt=self.dt,
-                output_limits=(0.0, 100.0),
-                integral_limits=(35.0, 85.0),
-                derivative_filter_tau=0.15,
-            ),
-        }
+        self.last_u = self.loop_config.output_limits[0]
 
         self.lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -312,7 +306,11 @@ class ControllerRuntime:
                         self.is_running = data.get("is_running", self.is_running)
                         self.trial_id = data.get("trial_id", self.trial_id)
                         mode_map = {
-                            "standard_pid": "baseline",
+                            "standard_pid": "discrete",
+                            "standard": "discrete",
+                            "baseline": "discrete",
+                            "discrete_pid": "discrete",
+                            "discrete": "discrete",
                             "smith_predictor": "smith",
                             "resilient_pid": "resilient",
                         }
@@ -354,7 +352,7 @@ class ControllerRuntime:
                 dt = self.dt
                 trial = self.trial_id
 
-            controller = self.controllers.get(active_mode, self.controllers["baseline"])
+            controller = self.controllers.get(active_mode, self.controllers["discrete"])
             is_loss = False
             rtt_ms = None
             current_pv = self.last_known_pv
@@ -417,7 +415,6 @@ class ControllerRuntime:
                                     rtt_ms = (t_rx - t_tx) * 1000.0
                                     break
                                 else:
-                                    # Demote nominal 1-tick late frames to DEBUG; keep severe out-of-order as WARNING
                                     if delta == -1:
                                         logger.debug(
                                             "Stale frame drained: seq %d (window: %d)",
@@ -438,13 +435,13 @@ class ControllerRuntime:
                         if rx_frame is not None:
                             current_pv = float(rx_frame["pv"])
                             self.last_known_pv = current_pv
-                            self.expected_rx_seq += 1
                             is_loss = False
                         else:
                             is_loss = True
                             rtt_ms = None
-                            if self.expected_rx_seq is not None:
-                                self.expected_rx_seq += 1
+
+                        if self.expected_rx_seq is not None:
+                            self.expected_rx_seq += 1
                     else:
                         is_loss = True
                 except (
@@ -469,7 +466,10 @@ class ControllerRuntime:
                     setpoint=sp, pv=self.last_known_pv, is_loss=is_loss
                 )
             else:
-                u_t = controller.update(setpoint=sp, pv=self.last_known_pv)
+                # SmithPredictor accepts (setpoint, pv, is_loss)
+                u_t = controller.update(
+                    setpoint=sp, pv=self.last_known_pv, is_loss=is_loss
+                )
 
             self.last_u = u_t
             error = sp - self.last_known_pv

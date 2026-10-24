@@ -1,6 +1,6 @@
 # Telemetry Web Interfaces Manual (InfluxDB v2 & Grafana)
 
-This document details baseline access, verification, and manual dashboard operations for the project telemetry layer.
+This document details standard operational access, verification, and manual dashboard operations for the project telemetry layer.
 
 ## 1. Service Endpoints & Authentication
 
@@ -32,17 +32,16 @@ When running inside Proxmox CT 201 or directly on bare-metal hardware via `hardw
 
 ```
 
-
 ## 3. InfluxDB Operations (Ad-Hoc Querying)
 
 Use InfluxDB directly for rapid ingest validation and raw time-series inspection.
 
 1. **Access Explorer**: Navigate to `http://127.0.0.1:8086` and select **Data Explorer** (graph icon on the left rail).
 2. **Query Builder**:
+
 * **Bucket**: Select `wireless_pid_metrics`.
 * **_measurement**: Select `control_telemetry`.
 * **_field**: Select `process_variable`, `setpoint`, and `control_effort`.
-
 
 3. **Inspect Output**: Select a target window (e.g., `Past 5m`) and click **Submit**.
 4. **Script Mode (Flux)**: Click **Script Editor** to query specific experimental trial IDs:
@@ -55,7 +54,6 @@ from(bucket: "wireless_pid_metrics")
   |> yield(name: "trial_filtered")
 
 ```
-
 
 ## 4. Grafana Operations
 

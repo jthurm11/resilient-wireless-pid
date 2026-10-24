@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-smith_predictor.py
+src/resilient_pid/controller/smith_predictor.py
 Discrete Smith Predictor engine for transport dead-time compensation.
 Decouples network latency from the closed-loop characteristic equation.
 """
@@ -8,9 +8,11 @@ Decouples network latency from the closed-loop characteristic equation.
 from collections import deque
 
 try:
-    from resilient_pid.controller.pid import DiscretePID
+    from resilient_pid.controller.arx_model import ARXModelParams, DiscreteARXModel
+    from resilient_pid.controller.pid import DiscretePID, PIDConfig
 except ImportError:
-    from .pid import DiscretePID
+    from .arx_model import ARXModelParams, DiscreteARXModel
+    from .pid import DiscretePID, PIDConfig
 
 
 class SmithPredictor:
@@ -21,120 +23,49 @@ class SmithPredictor:
 
     def __init__(
         self,
-        kp: float = 0.35,
-        ki: float = 0.12,
-        kd: float = 0.06,
-        dt: float = 0.05,
-        plant_delay_ms: float = 100.0,
-        output_limits: tuple[float, float] = (0.0, 100.0),
-        integral_limits: tuple[float, float] = (32.0, 65.0),
-        derivative_filter_tau: float = 0.02,
+        config: PIDConfig | None = None,
+        model_params: ARXModelParams | None = None,
+        plant_delay_ms: float = 0.0,
     ):
-        """
-        Initialize predictor gains, discrete model coefficients, and delay queue.
-
-        Args:
-            kp (float): Proportional gain.
-            ki (float): Integral gain.
-            kd (float): Derivative gain.
-            dt (float): Sampling interval in seconds.
-            plant_delay_ms (float): Expected transport latency in milliseconds.
-            output_limits (Tuple[float, float]): Actuator output bounds (min, max).
-            integral_limits (Tuple[float, float]): Internal integrator saturation bounds (min, max).
-            derivative_filter_tau (float): Time constant for derivative filter.
-        """
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.dt = dt
-        self.output_limits = output_limits
-        self.integral_limits = integral_limits
+        self.cfg = config or PIDConfig()
+        self.pid = DiscretePID(config=self.cfg)
+        self.model = DiscreteARXModel(params=model_params)
         self.plant_delay_ms = plant_delay_ms
 
-        # Embedded baseline controller
-        self.pid = DiscretePID(
-            kp=self.kp,
-            ki=self.ki,
-            kd=self.kd,
-            dt=self.dt,
-            output_limits=self.output_limits,
-            integral_limits=self.integral_limits,
-            derivative_filter_tau=derivative_filter_tau,
-        )
-
-        # Calibrated 2nd-order discrete ARX plant parameters (Ts = 50ms)
-        self.a1 = -1.6705
-        self.a2 = 0.6967
-        self.b1 = 0.0142
-        self.b2 = 0.0121
-
-        # Model state memory registers
-        self.y_model_1 = 0.0
-        self.y_model_2 = 0.0
-        self.u_model_1 = 0.0
-        self.u_model_2 = 0.0
-
-        # Circular delay queue for delayed plant estimation
-        self.delay_steps = max(1, int(round(self.plant_delay_ms / (self.dt * 1000.0))))
-        self.delay_buffer: deque[float] = deque(
-            [0.0] * self.delay_steps, maxlen=self.delay_steps
-        )
+        self.delay_steps = int(round(self.plant_delay_ms / (self.cfg.dt * 1000.0)))
+        buffer_len = max(1, self.delay_steps)
+        self.delay_buffer: deque[float] = deque([0.0] * buffer_len, maxlen=buffer_len)
 
     def set_dead_time(self, plant_delay_ms: float) -> None:
-        """
-        Reconfigure circular buffer length to match new network delay.
-
-        Args:
-            plant_delay_ms (float): Updated transport delay in milliseconds.
-        """
         self.plant_delay_ms = plant_delay_ms
-        self.delay_steps = max(1, int(round(self.plant_delay_ms / (self.dt * 1000.0))))
-        self.delay_buffer = deque([0.0] * self.delay_steps, maxlen=self.delay_steps)
+        self.delay_steps = int(round(self.plant_delay_ms / (self.cfg.dt * 1000.0)))
+        buffer_len = max(1, self.delay_steps)
+        self.delay_buffer = deque([0.0] * buffer_len, maxlen=buffer_len)
 
     def reset(self) -> None:
-        """Clear primary PID integrators, model state registers, and delay queue."""
         self.pid.reset()
-        self.y_model_1 = 0.0
-        self.y_model_2 = 0.0
-        self.u_model_1 = 0.0
-        self.u_model_2 = 0.0
-        self.delay_buffer = deque([0.0] * self.delay_steps, maxlen=self.delay_steps)
+        self.model.reset()
+        buffer_len = max(1, self.delay_steps)
+        self.delay_buffer = deque([0.0] * buffer_len, maxlen=buffer_len)
 
     def update(self, setpoint: float, pv: float, is_loss: bool = False) -> float:
-        """
-        Calculate dead-time compensated control effort u[k].
+        # If latency is negligible (< 25 ms), collapse directly to primary PID
+        if self.delay_steps == 0:
+            return self.pid.update(setpoint=setpoint, pv=pv, is_loss=is_loss)
 
-        Args:
-            setpoint (float): Reference target value SP[k].
-            pv (float): Measured process variable feedback PV[k].
-            is_loss (bool): Loss indicator flag for API polymorphism.
-
-        Returns:
-            float: Saturated control effort u[k].
-        """
-        # Retrieve oldest delayed model output from ring buffer
+        # Retrieve delayed model feedback
         y_model_delayed = self.delay_buffer[0] if len(self.delay_buffer) > 0 else 0.0
 
-        # Discrete recursive ARX step: G_p0(z) un-delayed estimation
-        y_model_fast = (
-            -self.a1 * self.y_model_1
-            - self.a2 * self.y_model_2
-            + self.b1 * self.u_model_1
-            + self.b2 * self.u_model_2
-        )
+        # Step fast delay-free internal twin
+        y_model_fast = self.model.step_autonomous(u_k=self.model.u_1)
 
-        # Reconstruct delay-free feedback using physical measurement mismatch
-        model_mismatch = pv - y_model_delayed
-        smith_feedback = y_model_fast + model_mismatch
+        # Calculate reconstructed Smith feedback: y_fast + (pv - y_delayed)
+        smith_feedback = y_model_fast + (pv - y_model_delayed)
 
-        # Calculate actuation effort from un-delayed predictive feedback
+        # Primary control action calculation
         u_t = self.pid.update(setpoint=setpoint, pv=smith_feedback, is_loss=is_loss)
 
-        # Enqueue current fast prediction and advance input-output history
+        # Enqueue fast estimate and update actuator memory
         self.delay_buffer.append(y_model_fast)
-        self.y_model_2 = self.y_model_1
-        self.y_model_1 = y_model_fast
-        self.u_model_2 = self.u_model_1
-        self.u_model_1 = u_t
-
+        self.model.u_1 = u_t
         return u_t

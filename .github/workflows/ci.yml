@@ -77,6 +77,9 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.docker == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       
@@ -93,8 +96,8 @@ jobs:
           file: deploy/docker/Dockerfile
           tags: resilient-pid-test:latest
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ github.workflow }}-${{ github.ref_name }}
+          cache-to: type=gha,mode=min,scope=${{ github.workflow }}-${{ github.ref_name }}
 
   publish-release:
     needs: [static-analysis, unit-testing, changes]

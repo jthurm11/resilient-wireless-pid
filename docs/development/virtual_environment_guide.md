@@ -26,21 +26,20 @@ Usage:
 
 ```
 
-
 ## Deployment Architectures
 
 Two isolated execution targets are supported:
 
 1. **Docker (Local Workstation):** Runs the dual-node DCS environment locally via Docker Compose.
+
 * Control plane services share the network namespace of `dcs-ctrl-node` (`10.10.10.1`), while `dcs-plant-node` executes in a dedicated container (`10.10.10.2`).
 * The orchestrator automatically creates the `10.10.10.0/24` network bridge, initializes InfluxDB v2, mounts Grafana dashboards, and starts the real-time controller and plant runtimes automatically as container entrypoints.
 * *Prerequisites:* Docker Engine 24.0+ and Docker Compose v2 plugin.
 
-
 2. **Proxmox VE (LXC Testbed):** Deploys two Debian 13 containers on a Proxmox VE host connected via an isolated Linux software bridge (`vmbr1`).
+
 * The orchestrator persists hypervisor kernel modules, provisions `vmbr1`, creates CT 201 (`dcs-ctrl-node`) and CT 202 (`dcs-plant-node`), configures virtual environments, and starts the telemetry stack inside CT 201 via `telemetry_stack.sh`.
 * Control loops run automatically via systemd services or can be invoked interactively inside container sessions.
-
 
 ## Workspace Provisioning & Access
 
@@ -143,7 +142,7 @@ Open a terminal session inside `dcs-ctrl-node` to apply network degradation to t
 ```bash
 IFACE="wlan0"
 
-# Inject 40ms baseline delay, ±10ms jitter, and 2% packet loss
+# Inject 40ms nominal delay, ±10ms jitter, and 2% packet loss
 tc qdisc add dev $IFACE root netem delay 40ms 10ms distribution normal loss 2%
 
 # Inspect active queue rules and test transit delay to dcs-plant-node

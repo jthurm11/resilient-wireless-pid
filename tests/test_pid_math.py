@@ -13,11 +13,13 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from resilient_pid.controller.pid import DiscretePID
+    from resilient_pid.controller.arx_model import ARXModelParams
+    from resilient_pid.controller.pid import DiscretePID, PIDConfig
     from resilient_pid.controller.resilient_pid import ResilientPID
     from resilient_pid.controller.smith_predictor import SmithPredictor
 except ImportError:
-    from pid import DiscretePID
+    from arx_model import ARXModelParams
+    from pid import DiscretePID, PIDConfig
     from smith_predictor import SmithPredictor
 
     from resilient_pid import ResilientPID
@@ -58,8 +60,8 @@ class TestControlMathematics(unittest.TestCase):
         pid.update(setpoint=50.0, pv=10.0)
 
         pid.reset()
-        self.assertEqual(pid.integral, 0.0)
-        self.assertEqual(pid.prev_error, 0.0)
+        self.assertEqual(pid.integral, pid.integral_limits[0])
+        self.assertIsNone(pid.prev_pv)
         self.assertEqual(pid.filtered_derivative, 0.0)
 
     # =========================================================================
@@ -70,8 +72,10 @@ class TestControlMathematics(unittest.TestCase):
         """Verify circular delay buffer capacity matches target dead time steps."""
         dt = 0.05
         plant_delay_ms = 200.0
+        cfg = PIDConfig(dt=dt)
+        arx = ARXModelParams()
 
-        sp = SmithPredictor(dt=dt, plant_delay_ms=plant_delay_ms)
+        sp = SmithPredictor(config=cfg, model_params=arx, plant_delay_ms=plant_delay_ms)
         expected_steps = int(round(plant_delay_ms / (dt * 1000.0)))
 
         self.assertEqual(sp.delay_steps, expected_steps)
@@ -79,7 +83,10 @@ class TestControlMathematics(unittest.TestCase):
 
     def test_smith_predictor_dynamic_dead_time_adjustment(self):
         """Verify dynamic reconfiguration of delay buffer depth."""
-        sp = SmithPredictor(dt=0.05, plant_delay_ms=100.0)
+        cfg = PIDConfig(dt=0.05)
+        arx = ARXModelParams()
+
+        sp = SmithPredictor(config=cfg, model_params=arx, plant_delay_ms=100.0)
         self.assertEqual(sp.delay_steps, 2)
 
         sp.set_dead_time(200.0)
@@ -88,14 +95,17 @@ class TestControlMathematics(unittest.TestCase):
 
     def test_smith_predictor_reset(self):
         """Verify predictor reset purges model registers and queue history."""
-        sp = SmithPredictor(dt=0.05, plant_delay_ms=100.0)
+        cfg = PIDConfig(dt=0.05)
+        arx = ARXModelParams()
+
+        sp = SmithPredictor(config=cfg, model_params=arx, plant_delay_ms=100.0)
         sp.update(setpoint=50.0, pv=10.0)
 
         sp.reset()
-        self.assertEqual(sp.y_model_1, 0.0)
-        self.assertEqual(sp.y_model_2, 0.0)
-        self.assertEqual(sp.u_model_1, 0.0)
-        self.assertEqual(sp.u_model_2, 0.0)
+        self.assertEqual(sp.model.y_1, 0.0)
+        self.assertEqual(sp.model.y_2, 0.0)
+        self.assertEqual(sp.model.u_1, 0.0)
+        self.assertEqual(sp.model.u_2, 0.0)
         self.assertTrue(all(val == 0.0 for val in sp.delay_buffer))
 
     # =========================================================================
@@ -104,7 +114,10 @@ class TestControlMathematics(unittest.TestCase):
 
     def test_resilient_pid_nominal_execution(self):
         """Verify nominal tracking step updates observer state."""
-        rpid = ResilientPID(kp=0.35, ki=0.12, kd=0.06, dt=0.05)
+        cfg = PIDConfig(kp=0.35, ki=0.12, kd=0.06, dt=0.05)
+        arx = ARXModelParams()
+
+        rpid = ResilientPID(config=cfg, model_params=arx)
         u_out = rpid.update(setpoint=50.0, pv=20.0, is_loss=False)
 
         self.assertTrue(0.0 <= u_out <= 100.0)
@@ -113,7 +126,10 @@ class TestControlMathematics(unittest.TestCase):
 
     def test_resilient_pid_dropout_compensation(self):
         """Verify observer feedback substitution during packet loss."""
-        rpid = ResilientPID(kp=0.35, ki=0.12, kd=0.06, dt=0.05)
+        cfg = PIDConfig(kp=0.35, ki=0.12, kd=0.06, dt=0.05)
+        arx = ARXModelParams()
+
+        rpid = ResilientPID(config=cfg, model_params=arx)
         rpid.update(setpoint=50.0, pv=20.0, is_loss=False)
 
         u_loss = rpid.update(setpoint=50.0, pv=0.0, is_loss=True)
@@ -122,13 +138,16 @@ class TestControlMathematics(unittest.TestCase):
 
     def test_resilient_pid_reset(self):
         """Verify resilient controller reset clears registers and loss tally."""
-        rpid = ResilientPID(kp=0.35, ki=0.12, kd=0.06, dt=0.05)
+        cfg = PIDConfig(kp=0.35, ki=0.12, kd=0.06, dt=0.05)
+        arx = ARXModelParams()
+
+        rpid = ResilientPID(config=cfg, model_params=arx)
         rpid.update(setpoint=50.0, pv=20.0, is_loss=True)
 
         rpid.reset()
         self.assertEqual(rpid.consecutive_losses, 0)
         self.assertEqual(rpid.y_est, 0.0)
-        self.assertEqual(rpid.y_model_1, 0.0)
+        self.assertEqual(rpid.model.y_1, 0.0)
 
     # =========================================================================
     # 4. Polymorphic API Contract Test
@@ -136,10 +155,13 @@ class TestControlMathematics(unittest.TestCase):
 
     def test_polymorphic_controller_interface(self):
         """Verify unified update and reset invocation contracts across all controllers."""
+        cfg = PIDConfig(dt=0.05)
+        arx = ARXModelParams()
+
         controllers = [
-            DiscretePID(dt=0.05),
-            SmithPredictor(dt=0.05, plant_delay_ms=100.0),
-            ResilientPID(dt=0.05),
+            DiscretePID(config=cfg),
+            SmithPredictor(config=cfg, model_params=arx, plant_delay_ms=100.0),
+            ResilientPID(config=cfg, model_params=arx),
         ]
 
         for ctrl in controllers:

@@ -36,6 +36,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PlantInterface")
 
+# Canonical Column Dimensional Mapping
+TUBE_GEOMETRY_DEFAULTS = {
+    "acrylic": {"length_cm": 45.085, "id_mm": 51.0},
+    "cardboard": {"length_cm": 78.0, "id_mm": 50.8},
+}
+
 # Conditional import of physical hardware drivers
 smbus2: Any = None
 GPIO: Any = None
@@ -66,6 +72,13 @@ class BasePlant(ABC):
         pass
 
     @abstractmethod
+    def get_telemetry_snapshot(self) -> tuple[float, float, int]:
+        """
+        Atomically returns (current_pv_percent, raw_distance_cm, miss_count).
+        """
+        pass
+
+    @abstractmethod
     def cleanup(self) -> None:
         """Safely de-energize physical actuators or release driver handles."""
         pass
@@ -82,13 +95,15 @@ class SimulatedPlant(BasePlant):
     def __init__(
         self,
         dt: float = 0.05,
-        tube_length_m: float = 0.50,  # 50 cm physical acrylic tube
-        ball_mass_kg: float = 0.0027,  # 2.7g standard ping pong ball
+        tube_length_m: float = 0.45085,  # 45.085 cm acrylic column
+        tube_type: str = "acrylic",
+        ball_mass_kg: float = 0.0027,  # 2.7g standard ping-pong ball
         ball_radius_m: float = 0.020,  # 40mm diameter
         g: float = 9.80665,
     ):
         self.dt = dt
         self.L_tube = tube_length_m
+        self.tube_type = tube_type
         self.m = ball_mass_kg
         self.r = ball_radius_m
         self.g = g
@@ -104,11 +119,26 @@ class SimulatedPlant(BasePlant):
 
         # State: [v_air (m/s), y_pos (m), v_ball (m/s)]
         self.state = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+        self._current_pv: float = 0.0
+        self._last_distance_cm: float = self.L_tube * 100.0
 
         # Mechanical boundaries
         self.cor_bottom = 0.20
         self.cor_top = 0.25
         self.friction_coeff = 0.05
+
+        logger.info(
+            "SimulatedPlant online: Column: %s (L=%.2f cm) | Solver: RK4 (dt=%.3fs) | "
+            "Aero: rho=%.3f kg/m^3, Cd=%.2f, m=%.1fg | Vmax=%.1f m/s (tau=%.2fs)",
+            self.tube_type.upper(),
+            self.L_tube * 100.0,
+            self.dt,
+            self.rho,
+            self.cd,
+            self.m * 1000.0,
+            self.v_air_max,
+            self.tau_fan,
+        )
 
     def _dynamics(
         self, state: np.ndarray, u_clamped: float, turbulent_flow: float
@@ -176,7 +206,13 @@ class SimulatedPlant(BasePlant):
 
         # Transducer acoustic reflection noise (0.25% variance)
         sensor_noise = np.random.normal(0.0, 0.25)
-        return float(np.clip(pv_true + sensor_noise, 0.0, 100.0))
+        self._current_pv = float(np.clip(pv_true + sensor_noise, 0.0, 100.0))
+        # Top-mounted acoustic distance looking down to ball
+        self._last_distance_cm = max(0.0, (self.L_tube - self.state[1]) * 100.0)
+        return self._current_pv
+
+    def get_telemetry_snapshot(self) -> tuple[float, float, int]:
+        return self._current_pv, self._last_distance_cm, 0
 
     def cleanup(self) -> None:
         logger.info("Cleaning up simulated plant state.")
@@ -206,7 +242,8 @@ class HardwarePlant(BasePlant):
         emc2101_addr: int = 0x4C,
         trig_pin: int = 23,
         echo_pin: int = 24,
-        tube_length_cm: float = 70.0,
+        tube_length_cm: float = 45.72,
+        tube_type: str = "acrylic",
         sensor_at_top: bool = True,
         enable_sensor_thread: bool = True,
     ):
@@ -219,15 +256,23 @@ class HardwarePlant(BasePlant):
         self.trig_pin = trig_pin
         self.echo_pin = echo_pin
         self.tube_length_cm = tube_length_cm
+        self.tube_type = tube_type
         self.sensor_at_top = sensor_at_top
         self.enable_sensor_thread = enable_sensor_thread
+
+        # Physical Calibration Constants
+        # d_min: Acoustic distance when ball apex touches top aperture (~1.5 cm)
+        # d_max: Acoustic distance when ball rests on bottom fan grille (~45.5 cm)
+        self.d_min_cm = 1.5
+        self.d_max_cm = self.tube_length_cm
 
         # Thread synchronization state
         self._lock = threading.Lock()
         self._current_pv: float = 0.0
-        self._last_distance_cm: float = 0.0
+        self._last_distance_cm: float = self.d_max_cm
         self._miss_count: int = 0
         self._running: bool = True
+        self._last_u_cmd: float = 0.0
 
         # Initialize EMC2101 over SMBus/I2C
         self.bus = smbus2.SMBus(i2c_bus)
@@ -248,14 +293,17 @@ class HardwarePlant(BasePlant):
             self.worker_thread.start()
 
         logger.info(
-            "HardwarePlant online: EMC2101 (0x%02X on I2C-%d) | HC-SR04 (TRIG=%d, ECHO=%d) | "
-            "Mounting: %s | Height: %.1f cm",
-            self.emc_addr,
-            i2c_bus,
+            "HardwarePlant online: Column: %s (L=%.2f cm) | "
+            "Transducer: HC-SR04 (BCM %d/%d, Calibration=[%.1f, %.1f] cm) | "
+            "Actuator: EMC2101 (0x%02X on I2C-%d, PWM=1.4kHz)",
+            self.tube_type.upper(),
+            self.tube_length_cm,
             self.trig_pin,
             self.echo_pin,
-            "TOP (Inverted)" if self.sensor_at_top else "BOTTOM (Direct)",
-            self.tube_length_cm,
+            self.d_min_cm,
+            self.d_max_cm,
+            self.emc_addr,
+            i2c_bus,
         )
 
     def _init_emc2101(self) -> None:
@@ -274,6 +322,7 @@ class HardwarePlant(BasePlant):
     def set_fan_pwm(self, duty_percent: float) -> None:
         """Sets fan duty cycle [0.0 - 100.0] via 6-bit register (0-63)."""
         clamped = max(0.0, min(100.0, duty_percent))
+        self._last_u_cmd = clamped
         reg_value = int(round((clamped / 100.0) * 63.0))
         try:
             self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SETTING, reg_value)
@@ -334,7 +383,7 @@ class HardwarePlant(BasePlant):
         return (duration * 34300.0) / 2.0
 
     def _sensor_worker(self) -> None:
-        """Dedicated background thread polling HC-SR04 at ~25 Hz."""
+        """Dedicated background thread polling HC-SR04 with acoustic blind-zone mitigation."""
         while self._running:
             d = self._acquire_distance_cm()
 
@@ -344,23 +393,35 @@ class HardwarePlant(BasePlant):
                 d = self._acquire_distance_cm()
 
             with self._lock:
-                if 2.0 <= d <= (self.tube_length_cm + 5.0):
+                # Blind-zone ceiling lock detection:
+                # If sensor times out (d < 0) or reads extremely short distance (d < 2.0cm)
+                # while the fan duty cycle is high (u > 50%), the ball is pinned at the top aperture.
+                if (
+                    (d < 2.0 or d < 0.0)
+                    and self._last_u_cmd > 50.0
+                    and self._current_pv > 60.0
+                ):
+                    self._miss_count = 0
+                    self._last_distance_cm = self.d_min_cm
+                    self._current_pv = 100.0
+                elif 1.0 <= d <= (self.d_max_cm + 5.0):
                     self._miss_count = 0
                     self._last_distance_cm = d
-                    if self.sensor_at_top:
-                        # Top sensor pointing down:
-                        # At top (d ~ 0 cm) -> ball_height = tube_length (PV ~ 100%)
-                        # At bottom (d = tube_length) -> ball_height = 0 (PV ~ 0%)
-                        ball_height_cm = max(
-                            0.0, min(self.tube_length_cm, self.tube_length_cm - d)
-                        )
-                    else:
-                        # Bottom sensor pointing up:
-                        ball_height_cm = max(0.0, min(self.tube_length_cm, d))
 
-                    self._current_pv = float(
-                        (ball_height_cm / self.tube_length_cm) * 100.0
-                    )
+                    # Linear normalization across calibrated physical range [d_min, d_max]
+                    d_clamped = max(self.d_min_cm, min(self.d_max_cm, d))
+                    if self.sensor_at_top:
+                        pv_normalized = (
+                            (self.d_max_cm - d_clamped)
+                            / (self.d_max_cm - self.d_min_cm)
+                        ) * 100.0
+                    else:
+                        pv_normalized = (
+                            (d_clamped - self.d_min_cm)
+                            / (self.d_max_cm - self.d_min_cm)
+                        ) * 100.0
+
+                    self._current_pv = float(np.clip(pv_normalized, 0.0, 100.0))
                 else:
                     self._miss_count += 1
                     if self._miss_count % 20 == 0:
@@ -370,14 +431,9 @@ class HardwarePlant(BasePlant):
                             d,
                         )
 
-            # Sampling rate regulation (~25-30 Hz)
             time.sleep(0.035)
 
     def step(self, u_t: float) -> float:
-        """
-        Actuates EMC2101 fan duty cycle and immediately returns cached PV.
-        Guaranteed execution time < 1.0 ms. Zero chance of UDP socket timeout.
-        """
         self.set_fan_pwm(u_t)
         pv, dist, misses = self.get_telemetry_snapshot()
 
@@ -400,18 +456,14 @@ class HardwarePlant(BasePlant):
         if hasattr(self, "worker_thread") and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=0.3)
 
-        # Force duty cycle to 0.0% and release I2C handle
         try:
             if hasattr(self, "bus") and self.bus is not None:
                 self.bus.write_byte_data(self.emc_addr, self.REG_FAN_SETTING, 0x00)
                 self.bus.close()
-                logger.info(
-                    "EMC2101 fan duty cycle zeroed (0x00) and SMBus handle closed."
-                )
+                logger.info("EMC2101 fan duty cycle zeroed and SMBus closed.")
         except Exception as e:
             logger.error("Failed to zero fan actuator during teardown: %s", e)
 
-        # Release GPIO lines
         try:
             if HARDWARE_AVAILABLE and GPIO is not None:
                 GPIO.cleanup([self.trig_pin, self.echo_pin])
@@ -450,17 +502,11 @@ def run_op_test(
     max_frames: int = 50,
     ignore_tach: bool = False,
 ) -> None:
-    """
-    Executes a structured operational test:
-      Phase 0: Baseline acoustic ping measurement & tube length consistency check.
-      Phase 1: Open-loop fan PWM actuation sweep & dynamic ball displacement check.
-      Phase 2: Remote controller UDP message parsing and closed-loop response test.
-    """
+    """Executes structured operational testing across sensor, fan, and UDP network."""
     logger.info("=================================================================")
     logger.info("PHASE 0: Static Sensor Baseline & Tube Geometry Calibration")
     logger.info("=================================================================")
 
-    # Ensure fan is de-energized to establish mechanical floor baseline
     plant.set_fan_pwm(0.0)
     time.sleep(1.0)
 
@@ -519,7 +565,6 @@ def run_op_test(
         )
         time.sleep(1.8)
 
-        # Collect synchronized window of tachometer and acoustic position data
         tach_samples: list[float] = []
         pv_samples: list[float] = []
         dist_samples: list[float] = []
@@ -548,7 +593,6 @@ def run_op_test(
             tach_str,
         )
 
-        # Actuation correlation analysis
         if target_pwm >= 60.0:
             if delta_lift_cm < 5.0 and avg_pv < 10.0:
                 logger.warning(
@@ -569,7 +613,6 @@ def run_op_test(
                 avg_pv,
             )
 
-        # Tachometer threshold check
         if target_pwm >= 30.0 and avg_rpm < 100.0:
             if not ignore_tach:
                 logger.error(
@@ -615,11 +658,9 @@ def run_op_test(
                 u_cmd = float(pkt.get("u", 0.0))
                 t_send = pkt.get("t_send")
 
-                # Actuate plant dynamically from controller packet
                 pv = plant.step(u_cmd)
                 rpm = plant.read_tach_rpm()
 
-                # Check if clocks share epoch timestamps (time.time > 1e9)
                 if t_send and t_send > 1e9:
                     epoch_now = time.time()
                     transit_ms = (epoch_now - t_send) * 1000.0
@@ -639,7 +680,6 @@ def run_op_test(
                     transit_str,
                 )
 
-                # Formulate synchronous response frame
                 resp = {"seq": seq, "pv": pv, "t_send": t_send, "t_echo": t_recv}
                 sock.sendto(json.dumps(resp).encode("utf-8"), addr)
                 received += 1
@@ -701,10 +741,17 @@ def parse_args() -> argparse.Namespace:
         help="Whether ultrasonic sensor is top-mounted pointing down (default: True).",
     )
     parser.add_argument(
+        "--tube-type",
+        choices=["acrylic", "cardboard"],
+        default="acrylic",
+        help="Physical column variant installed on the testbed (default: acrylic).",
+    )
+    parser.add_argument(
         "--tube-length",
         type=float,
-        default=70.0,
-        help="Calibrated physical column height in cm (default: 70.0).",
+        default=None,
+        help="Calibrated physical column height in cm. If omitted, automatically resolves "
+        "to the default for --tube-type (acrylic: 45.085 cm, cardboard: 78.0 cm).",
     )
 
     # Diagnostic mode arguments
@@ -741,20 +788,35 @@ def main() -> None:
     if args.op_test or args.cycle_test:
         ensure_service_stopped("dcs-plant.service")
 
+    # Resolve geometric column length based on tube type or explicit override
+    if args.tube_length is not None:
+        effective_tube_length_cm = args.tube_length
+    else:
+        effective_tube_length_cm = TUBE_GEOMETRY_DEFAULTS.get(
+            args.tube_type, TUBE_GEOMETRY_DEFAULTS["acrylic"]
+        )["length_cm"]
+
     plant: BasePlant
     if args.mode == "hardware":
         if not HARDWARE_AVAILABLE:
             logger.error(
                 "Physical drivers unavailable. Falling back to simulated twin."
             )
-            plant = SimulatedPlant(tube_length_m=args.tube_length / 100.0)
+            plant = SimulatedPlant(
+                tube_length_m=effective_tube_length_cm / 100.0,
+                tube_type=args.tube_type,
+            )
         else:
             plant = HardwarePlant(
-                tube_length_cm=args.tube_length,
+                tube_length_cm=effective_tube_length_cm,
+                tube_type=args.tube_type,
                 sensor_at_top=args.sensor_at_top,
             )
     else:
-        plant = SimulatedPlant(tube_length_m=args.tube_length / 100.0)
+        plant = SimulatedPlant(
+            tube_length_m=effective_tube_length_cm / 100.0,
+            tube_type=args.tube_type,
+        )
 
     # Dispatch to diagnostics if requested
     if args.op_test:
@@ -804,13 +866,11 @@ def main() -> None:
             "Signal %s (%d) caught. Unwinding main runtime loop...", sig_name, signum
         )
         shutdown_requested.set()
-        # Closing the socket forces sock.recvfrom(1024) to unblock immediately with an OSError
         try:
             sock.close()
         except OSError:
             pass
 
-    # Register handlers for systemd termination (SIGTERM) and interactive break (SIGINT)
     signal.signal(signal.SIGTERM, _sig_handler)
     signal.signal(signal.SIGINT, _sig_handler)
 
@@ -833,8 +893,22 @@ def main() -> None:
             t_send = pkt.get("t_send")
 
             pv = plant.step(u_t)
+            _, raw_dist_cm, _ = plant.get_telemetry_snapshot()
+            height_cm = (
+                effective_tube_length_cm - raw_dist_cm
+                if args.sensor_at_top
+                else raw_dist_cm
+            )
 
-            resp = {"seq": seq, "pv": pv, "t_send": t_send, "t_echo": t_recv}
+            # Augmented UDP payload with distance and physical height metrics
+            resp = {
+                "seq": seq,
+                "pv": round(pv, 2),
+                "dist_cm": round(raw_dist_cm, 2),
+                "height_cm": round(max(0.0, height_cm), 2),
+                "t_send": t_send,
+                "t_echo": t_recv,
+            }
             try:
                 sock.sendto(json.dumps(resp).encode("utf-8"), addr)
             except OSError:

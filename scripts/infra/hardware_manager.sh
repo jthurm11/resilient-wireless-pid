@@ -461,7 +461,7 @@ Type=simple
 User=root
 WorkingDirectory=${REPO_ROOT}
 Environment="DCS_ENV=bare_metal"
-ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode hardware --host 0.0.0.0 --port 5005 --tube-length 76.0
+ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode hardware --host 0.0.0.0 --port 5005 --tube-type acrylic
 Restart=on-failure
 RestartSec=3
 KillMode=mixed
@@ -572,12 +572,12 @@ action_status() {
 
   if [ -n "$unit" ]; then
     local status_line
-    status_line="$(systemctl is-active "$unit" 2>/dev/null"
+    status_line="$(systemctl is-active "$unit" 2>/dev/null || echo -n "")"
     echo -e "${TAB}${BOLD}Runtime Daemon:${CL}       ${unit} (${status_line})"
   fi
 
   local led_status
-  led_status="$(systemctl is-active dcs-led-monitor.service 2>/dev/null"
+  led_status="$(systemctl is-active dcs-led-monitor.service 2>/dev/null || echo -n "")"
   echo -e "${TAB}${BOLD}Diagnostic Supervisor:${CL} dcs-led-monitor.service (${led_status})"
 
   if command -v i2cdetect >/dev/null 2>&1; then

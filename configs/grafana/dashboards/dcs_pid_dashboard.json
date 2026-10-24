@@ -9,7 +9,7 @@
   "panels": [
     {
       "collapsed": false,
-      "gridPos": { "h": 3, "w": 8, "x": 0, "y": 0 },
+      "gridPos": { "h": 3, "w": 6, "x": 0, "y": 0 },
       "id": 101,
       "title": "Runtime Environment",
       "type": "stat",
@@ -41,7 +41,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 3, "w": 8, "x": 8, "y": 0 },
+      "gridPos": { "h": 3, "w": 6, "x": 6, "y": 0 },
       "id": 102,
       "title": "Active Control Law",
       "type": "stat",
@@ -55,7 +55,17 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed", "fixedColor": "purple" },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "discrete": { "text": "Discrete PID", "color": "purple", "index": 0 },
+                "baseline": { "text": "Discrete PID (Legacy)", "color": "purple", "index": 1 },
+                "smith": { "text": "Smith Predictor", "color": "blue", "index": 2 },
+                "resilient": { "text": "Resilient Observer PID", "color": "green", "index": 3 }
+              }
+            }
+          ]
         }
       },
       "options": {
@@ -73,7 +83,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 3, "w": 8, "x": 16, "y": 0 },
+      "gridPos": { "h": 3, "w": 6, "x": 12, "y": 0 },
       "id": 103,
       "title": "Mean RTT Latency",
       "type": "stat",
@@ -100,7 +110,39 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 3 },
+      "gridPos": { "h": 3, "w": 6, "x": 18, "y": 0 },
+      "id": 104,
+      "title": "Active Trial (ID)",
+      "type": "stat",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> keep(columns: [\"_time\", \"trial_id\"])\n  |> group()\n  |> sort(columns: [\"_time\"], desc: false)\n  |> last(column: \"trial_id\")\n  |> rename(columns: {trial_id: \"_value\"})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "mappings": []
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "Value",
+          "values": false
+        },
+        "textMode": "value"
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 9, "w": 21, "x": 0, "y": 3 },
       "id": 1,
       "title": "Process Variable (PV) vs Setpoint (SP)",
       "type": "timeseries",
@@ -112,40 +154,84 @@
             "lineInterpolation": "linear",
             "lineWidth": 2,
             "showPoints": "never"
-          }
+          },
+          "displayName": "${__series.name}"
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "setpoint" },
-            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "process_variable" },
-            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+            "matcher": { "id": "byRegexp", "options": ".*SP:.*" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "pink" } }
+            ]
           }
         ]
       },
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\" or r[\"_field\"] == \"setpoint\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"tracking\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\" or r[\"_field\"] == \"setpoint\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> map(fn: (r) => ({\n      _time: r._time,\n      _value: r._value,\n      _field: if r._field == \"process_variable\" then \"PV: \" + r.trial_id else \"SP: \" + r.trial_id\n  }))\n  |> group(columns: [\"_field\"])\n  |> yield(name: \"tracking\")"
         }
       ]
     },
     {
       "collapsed": false,
+      "gridPos": { "h": 9, "w": 3, "x": 21, "y": 3 },
+      "id": 5,
+      "title": "Ball Height (PV %)",
+      "type": "bargauge",
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: -30s)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"process_variable\")\n  |> last()"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "percent",
+          "displayName": "Measured Height",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 10 },
+              { "color": "yellow", "value": 85 },
+              { "color": "red", "value": 95 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "vertical",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true
+      }
+    },
+    {
+      "collapsed": false,
       "gridPos": { "h": 7, "w": 8, "x": 0, "y": 12 },
       "id": 2,
-      "title": "Actuator Output u(t)",
+      "title": "Actuator Output u(t) (control_signal)",
       "type": "timeseries",
       "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
       "fieldConfig": {
-        "defaults": { "custom": { "drawStyle": "line", "lineWidth": 1 } }
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 1 },
+          "displayName": "${__series.name}"
+        }
       },
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"control_signal\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"u_t\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"control_signal\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> map(fn: (r) => ({\n      _time: r._time,\n      _value: r._value,\n      _field: \"u: \" + r.trial_id\n  }))\n  |> group(columns: [\"_field\"])\n  |> yield(name: \"u_t\")"
         }
       ]
     },
@@ -153,19 +239,20 @@
       "collapsed": false,
       "gridPos": { "h": 7, "w": 8, "x": 8, "y": 12 },
       "id": 3,
-      "title": "Network Transport Latency (RTT ms)",
+      "title": "Network Transport Latency (rtt_ms)",
       "type": "timeseries",
       "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
       "fieldConfig": {
         "defaults": {
           "custom": { "drawStyle": "line", "lineWidth": 1 },
-          "unit": "ms"
+          "unit": "ms",
+          "displayName": "${__series.name}"
         }
       },
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt_ms\")\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)\n  |> yield(name: \"rtt\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt_ms\")\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)\n  |> map(fn: (r) => ({\n      _time: r._time,\n      _value: r._value,\n      _field: \"RTT: \" + r.trial_id\n  }))\n  |> group(columns: [\"_field\"])\n  |> yield(name: \"rtt\")"
         }
       ]
     },
@@ -173,16 +260,19 @@
       "collapsed": false,
       "gridPos": { "h": 7, "w": 8, "x": 16, "y": 12 },
       "id": 4,
-      "title": "Control Tracking Error",
+      "title": "Control Tracking Error (control_error)",
       "type": "timeseries",
       "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
       "fieldConfig": {
-        "defaults": { "custom": { "drawStyle": "line", "lineWidth": 1 } }
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 1 },
+          "displayName": "${__series.name}"
+        }
       },
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"err\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> map(fn: (r) => ({\n      _time: r._time,\n      _value: r._value,\n      _field: \"e: \" + r.trial_id\n  }))\n  |> group(columns: [\"_field\"])\n  |> yield(name: \"err\")"
         }
       ]
     }

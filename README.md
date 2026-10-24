@@ -44,7 +44,7 @@ graph TD
 
 ### Core Components
 
-* **Control Runtime Engine (`src/resilient_pid/controller/`)**: Discrete control laws supporting runtime switching between standard PID, Smith Predictor dead-time cancellation, and resilient observer estimation during dropouts.
+* **Control Runtime Engine (`src/resilient_pid/controller/`)**: Discrete control laws supporting runtime switching between discrete PID, Smith Predictor dead-time cancellation, and resilient observer estimation during dropouts.
 * **Plant Abstraction Layer (`src/resilient_pid/plant/`)**: Polymorphic execution target supporting physical PWM/I2C peripheral drivers (`HardwarePlant`) or a 4th-order Runge-Kutta continuous aerodynamic twin (`SimulatedPlant`).
 * **Telemetry Pipeline (`src/resilient_pid/telemetry/`)**: Asynchronous, non-blocking ingestion client streaming process variables, setpoints, control efforts, and round-trip times to InfluxDB v2.
 * **Command & Control Console (`src/resilient_pid/c2/`)**: REST API and operator web console for live setpoint adjustments, algorithm toggling, and trial coordination.
@@ -120,10 +120,11 @@ Once nodes are provisioned, the control loop, plant listener, and telemetry engi
 * **Grafana Dashboards:** Navigate to `http://127.0.0.1:3000` (or `http://10.10.10.1:3000` on bare-metal) with credentials `admin`/`admin` to inspect real-time tracking error, control effort, and transit latency.
 * **C2 Web Console:** Navigate to `http://127.0.0.1:5050` (or `http://10.10.10.1:5050`) to adjust setpoints or switch control algorithms on the fly.
 * **Headless C2 Actuation:**
+
 ```bash
 curl -s -X POST http://127.0.0.1:5050/api/control \
   -H "Content-Type: application/json" \
-  -d '{"algorithm": "smith", "setpoint": 65.0}'
+  -d '{"algorithm": "discrete", "setpoint": 65.0}'
 
 ```
 
@@ -134,7 +135,7 @@ From the controller node (`dcs-ctrl-node`), apply stochastic delay, jitter, and 
 ```bash
 IFACE="wlan0"
 
-# Inject 40ms baseline delay, ±10ms Gaussian jitter, and 2% packet loss
+# Inject 40ms nominal delay, ±10ms Gaussian jitter, and 2% packet loss
 sudo tc qdisc add dev $IFACE root netem delay 40ms 10ms distribution normal loss 2%
 
 # Verify queue statistics and ping degradation

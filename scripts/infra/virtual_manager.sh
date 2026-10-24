@@ -383,7 +383,7 @@ User=root
 WorkingDirectory=/opt/resilient-wireless-pid
 Environment=\"DCS_ENV=proxmox_lxc\"
 EnvironmentFile=-/etc/environment
-ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode simulate --host 0.0.0.0 --port 5005 --tube-length 76.0
+ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode simulate --host 0.0.0.0 --port 5005
 Restart=on-failure
 RestartSec=3
 KillMode=mixed
