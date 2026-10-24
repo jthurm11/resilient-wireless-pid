@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 src/resilient_pid/controller/pid.py
-Discrete PID controller with anti-windup clamping and derivative filtering.
-Provides primary (discrete) actuation and integral hold logic for loss events.
+Hardened Discrete PID controller with hover feedforward, conditional anti-windup,
+and low-pass derivative filtering on measurement.
 """
 
 from dataclasses import dataclass
@@ -12,13 +12,15 @@ from dataclasses import dataclass
 class PIDConfig:
     """Canonical loop gains, anti-windup saturation bounds, and filtering constants."""
 
-    kp: float = 0.16
-    ki: float = 0.025
-    kd: float = 0.12
+    kp: float = 0.17
+    ki: float = 0.020
+    kd: float = 0.13
     dt: float = 0.05
-    output_limits: tuple[float, float] = (0.0, 78.0)
-    integral_limits: tuple[float, float] = (0.0, 70.0)
-    derivative_filter_tau: float = 0.35
+    ff_hover: float = 38.5  # Empirical aerodynamic hover bias for SP ~ 50%
+    output_limits: tuple[float, float] = (33.5, 58.0)  # [u_min_flight, u_max_flight]
+    integral_limits: tuple[float, float] = (-12.0, 12.0)
+    integral_band: float = 10.0  # Conditional integration band (|error| <= 10%)
+    derivative_filter_tau: float = 0.30
 
 
 class DiscretePID:
@@ -39,30 +41,36 @@ class DiscretePID:
             output_limits (Tuple[float, float]): Output saturation bounds (min, max).
             integral_limits (Tuple[float, float]): Internal integrator saturation bounds (min, max).
             derivative_filter_tau (float): Filter time constant for derivative term.
+            ff_hover (float): Feedforward hover bias for terminal velocity balance.
+            integral_band (float): Maximum error magnitude allowed for active integration.
         """
-
         self.cfg = config or PIDConfig()
         self.kp: float = float(overrides.get("kp", self.cfg.kp))
         self.ki: float = float(overrides.get("ki", self.cfg.ki))
         self.kd: float = float(overrides.get("kd", self.cfg.kd))
         self.dt: float = float(overrides.get("dt", self.cfg.dt))
+        self.ff_hover: float = float(overrides.get("ff_hover", self.cfg.ff_hover))
         self.output_limits: tuple[float, float] = overrides.get(
             "output_limits", self.cfg.output_limits
         )
         self.integral_limits: tuple[float, float] = overrides.get(
             "integral_limits", self.cfg.integral_limits
         )
+        self.int_band: float = float(
+            overrides.get("integral_band", self.cfg.integral_band)
+        )
         self.tau: float = float(
             overrides.get("derivative_filter_tau", self.cfg.derivative_filter_tau)
         )
-        # Pre-charge integrator near baseline float equilibrium
-        self.integral = self.integral_limits[0]
+
+        # Baseline integral accumulator begins at zero; hover bias is carried by ff_hover
+        self.integral = 0.0
         self.prev_pv: float | None = None
         self.filtered_derivative = 0.0
 
     def reset(self) -> None:
         """Reset internal integrator, previous PV, and derivative registers."""
-        self.integral = self.integral_limits[0]
+        self.integral = 0.0
         self.prev_pv = None
         self.filtered_derivative = 0.0
 
@@ -79,6 +87,11 @@ class DiscretePID:
         Returns:
             float: Saturated control effort u[k] bounded by output_limits.
         """
+        # Complete actuator de-energization when shutdown is requested
+        if setpoint <= 0.0:
+            self.reset()
+            return 0.0
+
         error = setpoint - pv
 
         if not is_loss:
@@ -94,17 +107,22 @@ class DiscretePID:
 
             # Evaluate tentative unconstrained output
             d_term = self.kd * self.filtered_derivative
-            u_tentative = (self.kp * error) + self.integral - d_term
+            u_tentative = self.ff_hover + (self.kp * error) + self.integral - d_term
 
-            # Clamping Anti-Windup: only integrate if output is not saturated,
-            # or if integration acts to pull the output back inside limits
+            # Conditional Integration & Clamping Anti-Windup:
+            # 1. Gate accumulation to steady-state regulation zone and away from physical hardstops
+            # 2. Only integrate if output is unconstrained or if action actively pulls output out of saturation
             u_min, u_max = self.output_limits
-            if u_min < u_tentative < u_max:
-                self.integral += self.ki * error * self.dt
-            elif u_tentative >= u_max and error < 0:
-                self.integral += self.ki * error * self.dt
-            elif u_tentative <= u_min and error > 0:
-                self.integral += self.ki * error * self.dt
+            if abs(error) <= self.int_band and 12.0 < pv < 88.0:
+                if u_min < u_tentative < u_max:
+                    self.integral += self.ki * error * self.dt
+                elif u_tentative >= u_max and error < 0:
+                    self.integral += self.ki * error * self.dt
+                elif u_tentative <= u_min and error > 0:
+                    self.integral += self.ki * error * self.dt
+            else:
+                # Decay accumulated error exponentially when outside the linear band
+                self.integral *= 0.85
 
             # Bound integral state accumulator
             i_min, i_max = self.integral_limits
@@ -113,7 +131,13 @@ class DiscretePID:
             d_term = 0.0
 
         u_unclamped = (
-            (self.kp * error) + self.integral - (self.kd * self.filtered_derivative)
+            self.ff_hover
+            + (self.kp * error)
+            + self.integral
+            - (self.kd * self.filtered_derivative)
         )
         u_min, u_max = self.output_limits
-        return float(max(u_min, min(u_max, u_unclamped)))
+
+        # If commanding a resting setpoint, bypass active flight floor clamp
+        effective_u_min = 0.0 if setpoint <= 5.0 else u_min
+        return float(max(effective_u_min, min(u_max, u_unclamped)))
