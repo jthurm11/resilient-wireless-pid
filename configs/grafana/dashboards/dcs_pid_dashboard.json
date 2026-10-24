@@ -161,13 +161,7 @@
           {
             "matcher": { "id": "byRegexp", "options": ".*SP:.*" },
             "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }
-            ]
-          },
-          {
-            "matcher": { "id": "byRegexp", "options": ".*PV:.*" },
-            "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "pink" } }
             ]
           }
         ]
