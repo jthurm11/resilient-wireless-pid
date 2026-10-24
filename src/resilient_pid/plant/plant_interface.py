@@ -72,6 +72,13 @@ class BasePlant(ABC):
         pass
 
     @abstractmethod
+    def get_telemetry_snapshot(self) -> tuple[float, float, int]:
+        """
+        Atomically returns (current_pv_percent, raw_distance_cm, miss_count).
+        """
+        pass
+
+    @abstractmethod
     def cleanup(self) -> None:
         """Safely de-energize physical actuators or release driver handles."""
         pass
@@ -112,6 +119,8 @@ class SimulatedPlant(BasePlant):
 
         # State: [v_air (m/s), y_pos (m), v_ball (m/s)]
         self.state = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+        self._current_pv: float = 0.0
+        self._last_distance_cm: float = self.L_tube * 100.0
 
         # Mechanical boundaries
         self.cor_bottom = 0.20
@@ -197,7 +206,13 @@ class SimulatedPlant(BasePlant):
 
         # Transducer acoustic reflection noise (0.25% variance)
         sensor_noise = np.random.normal(0.0, 0.25)
-        return float(np.clip(pv_true + sensor_noise, 0.0, 100.0))
+        self._current_pv = float(np.clip(pv_true + sensor_noise, 0.0, 100.0))
+        # Top-mounted acoustic distance looking down to ball
+        self._last_distance_cm = max(0.0, (self.L_tube - self.state[1]) * 100.0)
+        return self._current_pv
+
+    def get_telemetry_snapshot(self) -> tuple[float, float, int]:
+        return self._current_pv, self._last_distance_cm, 0
 
     def cleanup(self) -> None:
         logger.info("Cleaning up simulated plant state.")
@@ -277,12 +292,9 @@ class HardwarePlant(BasePlant):
             )
             self.worker_thread.start()
 
-        poll_mode_str = (
-            "Async-Thread (~28.5Hz)" if self.enable_sensor_thread else "Synchronous"
-        )
         logger.info(
             "HardwarePlant online: Column: %s (L=%.2f cm) | "
-            "Transducer: HC-SR04 (BCM %d/%d, Calibration=[%.1f, %.1f] cm, %s) | "
+            "Transducer: HC-SR04 (BCM %d/%d, Calibration=[%.1f, %.1f] cm) | "
             "Actuator: EMC2101 (0x%02X on I2C-%d, PWM=1.4kHz)",
             self.tube_type.upper(),
             self.tube_length_cm,
@@ -290,7 +302,6 @@ class HardwarePlant(BasePlant):
             self.echo_pin,
             self.d_min_cm,
             self.d_max_cm,
-            poll_mode_str,
             self.emc_addr,
             i2c_bus,
         )
@@ -868,8 +879,18 @@ def main() -> None:
             t_send = pkt.get("t_send")
 
             pv = plant.step(u_t)
+            _, raw_dist_cm, _ = plant.get_telemetry_snapshot()
+            height_cm = effective_tube_length_cm - raw_dist_cm if args.sensor_at_top else raw_dist_cm
 
-            resp = {"seq": seq, "pv": pv, "t_send": t_send, "t_echo": t_recv}
+            # Augmented UDP payload with distance and physical height metrics
+            resp = {
+                "seq": seq,
+                "pv": round(pv, 2),
+                "dist_cm": round(raw_dist_cm, 2),
+                "height_cm": round(max(0.0, height_cm), 2),
+                "t_send": t_send,
+                "t_echo": t_recv,
+            }
             try:
                 sock.sendto(json.dumps(resp).encode("utf-8"), addr)
             except OSError:

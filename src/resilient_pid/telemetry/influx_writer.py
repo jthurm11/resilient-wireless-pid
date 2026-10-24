@@ -102,6 +102,8 @@ class InfluxWriter:
         rtt_ms: float | None = None,
         dt_exec_ms: float | None = None,
         is_loss: bool = False,
+        raw_distance_cm: float | None = None,
+        height_cm: float | None = None,
     ) -> None:
         """Push a control telemetry data point to the background queue."""
         now_ns = time.time_ns()
@@ -126,6 +128,10 @@ class InfluxWriter:
             metric_data["fields"]["rtt_ms"] = float(rtt_ms)
         if dt_exec_ms is not None:
             metric_data["fields"]["dt_exec_ms"] = float(dt_exec_ms)
+        if raw_distance_cm is not None:
+            metric_data["fields"]["raw_distance_cm"] = float(raw_distance_cm)
+        if height_cm is not None:
+            metric_data["fields"]["height_cm"] = float(height_cm)
 
         try:
             self._queue.put_nowait(metric_data)
