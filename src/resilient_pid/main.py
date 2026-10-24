@@ -435,12 +435,12 @@ class ControllerRuntime:
                         if rx_frame is not None:
                             current_pv = float(rx_frame["pv"])
                             self.last_known_pv = current_pv
-                            self.expected_rx_seq += 1
                             is_loss = False
                         else:
                             is_loss = True
                             rtt_ms = None
-                            if self.expected_rx_seq is not None:
+
+                        if self.expected_rx_seq is not None:
                                 self.expected_rx_seq += 1
                     else:
                         is_loss = True

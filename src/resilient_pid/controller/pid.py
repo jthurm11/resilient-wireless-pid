@@ -42,14 +42,19 @@ class DiscretePID:
         """
 
         self.cfg = config or PIDConfig()
-        self.kp = overrides.get("kp", self.cfg.kp)
-        self.ki = overrides.get("ki", self.cfg.ki)
-        self.kd = overrides.get("kd", self.cfg.kd)
-        self.dt = overrides.get("dt", self.cfg.dt)
-        self.output_limits = overrides.get("output_limits", self.cfg.output_limits)
-        self.integral_limits = overrides.get("integral_limits", self.cfg.integral_limits)
-        self.tau = overrides.get("derivative_filter_tau", self.cfg.derivative_filter_tau)
-
+        self.kp: float = float(overrides.get("kp", self.cfg.kp))
+        self.ki: float = float(overrides.get("ki", self.cfg.ki))
+        self.kd: float = float(overrides.get("kd", self.cfg.kd))
+        self.dt: float = float(overrides.get("dt", self.cfg.dt))
+        self.output_limits: tuple[float, float] = overrides.get(
+            "output_limits", self.cfg.output_limits
+        )
+        self.integral_limits: tuple[float, float] = overrides.get(
+            "integral_limits", self.cfg.integral_limits
+        )
+        self.tau: float = float(
+            overrides.get("derivative_filter_tau", self.cfg.derivative_filter_tau)
+        )
         # Pre-charge integrator near baseline float equilibrium
         self.integral = self.integral_limits[0]
         self.prev_pv: float | None = None
@@ -109,4 +114,4 @@ class DiscretePID:
 
         u_unclamped = (self.kp * error) + self.integral - (self.kd * self.filtered_derivative)
         u_min, u_max = self.output_limits
-        return max(u_min, min(u_max, u_unclamped))
+        return float(max(u_min, min(u_max, u_unclamped)))
