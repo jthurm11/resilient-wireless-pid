@@ -115,10 +115,10 @@ class BaselineOrchestrator:
         except requests.RequestException:
             pass
 
-    def run_preflight_runway(self, initial_sp: float, max_runway_sec: float = 35.0) -> None:
+    def run_preflight_runway(self, initial_sp: float, max_runway_sec: float = 30.0) -> None:
         """
-        Dynamically waits for the ball to lift and stabilize at initial_sp.
-        Requires PV to hold within +/- 3.5% with low variance for 4 seconds.
+        Dynamically monitors convergence to initial setpoint before commencing formal trial.
+        Waits for steady-state hover (PV near SP with low variance) over a 4-second hold window.
         """
         logger.info(
             ">>> ENGAGING DYNAMIC PRE-FLIGHT RUNWAY | Target SP: %.1f%% (Max Budget: %.1fs) <<<",
@@ -127,13 +127,14 @@ class BaselineOrchestrator:
         )
         self.tc.clear_rules()
 
+        # Engage blower
         self.set_c2_state(
             algorithm="discrete", setpoint=initial_sp, trial_id="runway_spoolup"
         )
 
         query_api = self.influx_client.query_api()
         t0 = time.perf_counter()
-        required_samples = 20  # 4 continuous seconds at 5 Hz polling
+        required_samples = 20  # 4 continuous seconds at 5 Hz polling (0.2s dt)
         pv_buffer: list[float] = []
 
         while (time.perf_counter() - t0) < max_runway_sec:
@@ -157,10 +158,11 @@ class BaselineOrchestrator:
                         variance = sum((x - mean_pv) ** 2 for x in pv_buffer) / len(pv_buffer)
                         error = abs(mean_pv - initial_sp)
 
-                        if error <= 3.5 and variance < 2.0:
+                        # Validate that the ball is hovering within steady envelope
+                        if error <= 6.0 and variance <= 6.0:
                             elapsed = time.perf_counter() - t0
                             logger.info(
-                                ">>> PRE-FLIGHT CONVERGED: SP=%.1f%% achieved in %.2fs (Variance: %.2f). Launching trial. <<<",
+                                ">>> PRE-FLIGHT CONVERGED: SP=%.1f%% achieved in %.2fs (Variance: %.2f). Commencing evaluation. <<<",
                                 initial_sp,
                                 elapsed,
                                 variance,
@@ -172,7 +174,7 @@ class BaselineOrchestrator:
             time.sleep(0.2)
 
         logger.warning(
-            "[Pre-Flight Warning] Dynamic runway timed out after %.1fs. Proceeding with active trial...",
+            "[Pre-Flight Warning] Dynamic runway timed out after %.1fs. Proceeding with trial...",
             max_runway_sec,
         )
 

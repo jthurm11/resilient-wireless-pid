@@ -2,7 +2,8 @@
 """
 test_pid_math.py
 Unit tests verifying control mathematics, delay buffers, anti-windup clamping,
-and loss-hold logic across DiscretePID, SmithPredictor, and ResilientPID.
+takeoff windup discharge, and loss-hold logic across DiscretePID,
+SmithPredictor, and ResilientPID.
 """
 
 import os
@@ -34,65 +35,81 @@ class TestControlMathematics(unittest.TestCase):
 
     def test_discrete_pid_hover_feedforward_at_zero_error(self):
         """Verify that with zero error and no integral, output equals hover bias."""
-        cfg = PIDConfig(ff_hover=38.5, kp=0.17, ki=0.02, kd=0.13)
+        cfg = PIDConfig(ff_hover=33.5, kp=0.16, ki=0.022, kd=0.15)
         pid = DiscretePID(config=cfg)
 
         # SP = 50.0, PV = 50.0 -> error = 0, dPV = 0, integral = 0
         u_out = pid.update(setpoint=50.0, pv=50.0, is_loss=False)
-        self.assertAlmostEqual(u_out, 38.5, places=2)
+        self.assertAlmostEqual(u_out, 33.5, places=2)
 
-    def test_discrete_pid_conditional_integration_floor_gate(self):
-        """Verify integrator does not wind up while the ball rests on the floor mesh (PV < 12%)."""
+    def test_discrete_pid_debounced_floor_arming_and_takeoff_discharge(self):
+        """Verify 3-frame debounce arms takeoff, and liftoff (PV >= 16%) discharges integral."""
         pid = DiscretePID()
 
-        # Command lift while ball is at floor (PV = 5.0%)
-        for _ in range(50):
-            pid.update(setpoint=50.0, pv=5.0, is_loss=False)
+        # Frame 1 & 2 on mesh: Not yet armed
+        pid.update(setpoint=50.0, pv=8.0, is_loss=False)
+        self.assertFalse(pid._liftoff_armed)
+        pid.update(setpoint=50.0, pv=8.0, is_loss=False)
+        self.assertFalse(pid._liftoff_armed)
 
-        # Integration must remain zero to prevent the 65% launch rocket
+        # Frame 3 on mesh: Takeoff state is armed
+        pid.update(setpoint=50.0, pv=8.0, is_loss=False)
+        self.assertTrue(pid._liftoff_armed)
+        self.assertGreater(pid.integral, 0.0)
+
+        # Allow takeoff integrator to accumulate upward authority (20 ticks @ ~0.294%/tick)
+        for _ in range(20):
+            pid.update(setpoint=50.0, pv=8.0, is_loss=False)
+        self.assertGreater(pid.integral, 5.0)
+
+        # Ball crosses liftoff threshold (PV >= 16%): Must discharge accumulated takeoff integral
+        u_liftoff = pid.update(setpoint=50.0, pv=18.0, is_loss=False)
         self.assertEqual(pid.integral, 0.0)
+        self.assertFalse(pid._liftoff_armed)
+        # Output should throttle down to hover corridor (< 45%)
+        self.assertLess(u_liftoff, 45.0)
 
-    def test_discrete_pid_conditional_integration_ceiling_gate(self):
-        """Verify integrator does not wind up while the ball is at the top aperture (PV > 88%)."""
+    def test_discrete_pid_ceiling_suction_escape(self):
+        """Verify that ball entering the ceiling zone (PV >= 80%) drops command to <= 12.0%."""
         pid = DiscretePID()
 
-        # Ball forced into top stop (PV = 92.0%)
-        for _ in range(50):
-            pid.update(setpoint=50.0, pv=92.0, is_loss=False)
+        # Ball forced into top stop: SP=50, PV=88.0
+        u_out = pid.update(setpoint=50.0, pv=88.0, is_loss=False)
 
-        self.assertEqual(pid.integral, 0.0)
+        # Actuator must cut deep (<= 15.0%) down to the relaxed floor (8.0% - 12.0%)
+        self.assertLessEqual(u_out, 15.0)
+        self.assertGreaterEqual(u_out, 8.0)
+        self.assertLessEqual(pid.integral, 0.0)
 
     def test_discrete_pid_anti_windup_clamping(self):
         """Verify that integrator accumulation bounds strictly at integral_limits."""
         cfg = PIDConfig(
-            ff_hover=38.5,
-            integral_band=10.0,
-            integral_limits=(-12.0, 12.0),
-            output_limits=(33.5, 58.0),
-            ki=1.0,  # High gain to force fast integration
+            ff_hover=33.5,
+            integral_limits=(-12.0, 30.0),
+            output_limits=(20.0, 75.0),
+            ki=2.0,  # High gain to force fast integration
         )
         pid = DiscretePID(config=cfg)
 
-        # Drive steady error inside the valid band: SP=50, PV=45 -> error = +5.0
+        # Drive steady positive error inside the active flight corridor (SP=50, PV=45)
         for _ in range(100):
             pid.update(setpoint=50.0, pv=45.0, is_loss=False)
 
-        # Integrator must be clamped to the symmetric boundary (+12.0)
-        self.assertAlmostEqual(pid.integral, 12.0, places=2)
-        # Actuator output must respect upper flight ceiling (58.0%)
-        self.assertLessEqual(pid.update(setpoint=50.0, pv=45.0), 58.0)
+        # Integrator must be clamped at the upper limit (30.0)
+        self.assertAlmostEqual(pid.integral, 30.0, places=2)
+        # Actuator output must respect upper limit (75.0)
+        self.assertLessEqual(pid.update(setpoint=50.0, pv=45.0), 75.0)
 
     def test_discrete_pid_loss_flag_suspends_integration(self):
         """Verify that is_loss=True freezes integral state inside the linear band."""
-        cfg = PIDConfig(integral_band=10.0)
-        pid = DiscretePID(config=cfg)
+        pid = DiscretePID()
 
-        # Nominal step inside integration envelope: SP=50.0, PV=48.0
+        # Active flight step: SP=50.0, PV=48.0
         pid.update(setpoint=50.0, pv=48.0, is_loss=False)
         integral_nominal = pid.integral
         self.assertGreater(integral_nominal, 0.0)
 
-        # Subsequent step with loss flag set
+        # Subsequent step with loss flag set: Integral must not change
         pid.update(setpoint=50.0, pv=48.0, is_loss=True)
         self.assertEqual(pid.integral, integral_nominal)
 
@@ -106,14 +123,16 @@ class TestControlMathematics(unittest.TestCase):
         self.assertEqual(pid.integral, 0.0)
 
     def test_discrete_pid_reset(self):
-        """Verify that reset clears all internal state registers to zero."""
+        """Verify that reset clears all internal state registers and armed flags."""
         pid = DiscretePID()
-        pid.update(setpoint=50.0, pv=48.0)
+        pid.update(setpoint=50.0, pv=8.0)
 
         pid.reset()
         self.assertEqual(pid.integral, 0.0)
         self.assertIsNone(pid.prev_pv)
         self.assertEqual(pid.filtered_derivative, 0.0)
+        self.assertFalse(pid._liftoff_armed)
+        self.assertEqual(pid._floor_confirm_count, 0)
 
     # =========================================================================
     # 2. SmithPredictor Tests
@@ -164,15 +183,15 @@ class TestControlMathematics(unittest.TestCase):
     # =========================================================================
 
     def test_resilient_pid_nominal_execution(self):
-        """Verify nominal tracking step updates observer state."""
+        """Verify nominal tracking step updates observer state within operational bounds."""
         cfg = PIDConfig(kp=0.35, ki=0.12, kd=0.06, dt=0.05)
         arx = ARXModelParams()
 
         rpid = ResilientPID(config=cfg, model_params=arx)
         u_out = rpid.update(setpoint=50.0, pv=48.0, is_loss=False)
 
-        # Must respect active operational envelope
-        self.assertTrue(33.5 <= u_out <= 58.0)
+        # Operational envelope check
+        self.assertTrue(8.0 <= u_out <= 75.0)
         self.assertEqual(rpid.consecutive_losses, 0)
         self.assertNotEqual(rpid.y_est, 0.0)
 
@@ -186,7 +205,8 @@ class TestControlMathematics(unittest.TestCase):
 
         u_loss = rpid.update(setpoint=50.0, pv=0.0, is_loss=True)
         self.assertEqual(rpid.consecutive_losses, 1)
-        self.assertTrue(33.5 <= u_loss <= 58.0)
+        # Bounded between safe dropout/ceiling floor (8.0%) and maximum thrust (75.0%)
+        self.assertTrue(8.0 <= u_loss <= 75.0)
 
     def test_resilient_pid_reset(self):
         """Verify resilient controller reset clears registers and loss tally."""
@@ -220,13 +240,13 @@ class TestControlMathematics(unittest.TestCase):
             ctrl.reset()
             u_norm = ctrl.update(setpoint=50.0, pv=48.0, is_loss=False)
             self.assertIsInstance(u_norm, float)
-            self.assertGreaterEqual(u_norm, 33.5)
-            self.assertLessEqual(u_norm, 58.0)
+            self.assertGreaterEqual(u_norm, 8.0)
+            self.assertLessEqual(u_norm, 75.0)
 
             u_loss = ctrl.update(setpoint=50.0, pv=48.0, is_loss=True)
             self.assertIsInstance(u_loss, float)
-            self.assertGreaterEqual(u_loss, 33.5)
-            self.assertLessEqual(u_loss, 58.0)
+            self.assertGreaterEqual(u_loss, 8.0)
+            self.assertLessEqual(u_loss, 75.0)
 
 
 if __name__ == "__main__":
