@@ -506,8 +506,8 @@ sync_lxc() {
   msg_info "Synchronizing host workspace to '${TARGET_BRANCH}'"
   cd "$TARGET_DIR" 2>/dev/null || cd "$REPO_ROOT"
   git fetch origin >/dev/null 2>&1
-  git checkout "$TARGET_BRANCH" >/dev/null 2>&1
-  git pull origin "$TARGET_BRANCH" >/dev/null 2>&1
+  git checkout "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Checkout failed: $TARGET_BRANCH"
+  git pull origin "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Pull failed: $TARGET_BRANCH"
   msg_ok "Host workspace synchronized"
 
   for ctid in 201 202; do

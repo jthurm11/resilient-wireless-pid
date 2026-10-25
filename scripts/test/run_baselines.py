@@ -115,33 +115,71 @@ class BaselineOrchestrator:
         except requests.RequestException:
             pass
 
-    def run_preflight_runway(self, initial_sp: float, runway_sec: float = 30.0) -> None:
+    def run_preflight_runway(
+        self, initial_sp: float, max_runway_sec: float = 30.0
+    ) -> None:
         """
-        Engages the blower on an unshaped link to spin up impellers and hover
-        the ball at the initial setpoint prior to trial evaluation.
+        Dynamically monitors convergence to initial setpoint before commencing formal trial.
+        Waits for steady-state hover (PV near SP with low variance) over a 4-second hold window.
         """
         logger.info(
-            ">>> ENGAGING PRE-FLIGHT RUNWAY (%.1fs) | Target SP: %.1f%% <<<",
-            runway_sec,
+            ">>> ENGAGING DYNAMIC PRE-FLIGHT RUNWAY | Target SP: %.1f%% (Max Budget: %.1fs) <<<",
             initial_sp,
+            max_runway_sec,
         )
         self.tc.clear_rules()
 
-        # Feedforward spool-up using discrete PID
-        logger.info("[Pre-Flight] Spooling impellers to establish positive draft...")
+        # Engage blower
         self.set_c2_state(
             algorithm="discrete", setpoint=initial_sp, trial_id="runway_spoolup"
         )
 
-        remaining_runway = max(1.0, runway_sec - 5.0)
-        logger.info(
-            "[Pre-Flight] Ball airborne; stabilizing at SP=%.1f%% for %.1fs...",
-            initial_sp,
-            remaining_runway,
-        )
-        time.sleep(remaining_runway)
-        logger.info(
-            ">>> PRE-FLIGHT COMPLETE: Plant at steady-state hover. Transitioning to formal trial. <<<"
+        query_api = self.influx_client.query_api()
+        t0 = time.perf_counter()
+        required_samples = 20  # 4 continuous seconds at 5 Hz polling (0.2s dt)
+        pv_buffer: list[float] = []
+
+        while (time.perf_counter() - t0) < max_runway_sec:
+            flux_query = f"""
+            from(bucket: "{self.influx_bucket}")
+              |> range(start: -2s)
+              |> filter(fn: (r) => r["_measurement"] == "control_telemetry")
+              |> filter(fn: (r) => r["_field"] == "process_variable")
+              |> last()
+            """
+            try:
+                tables = query_api.query(flux_query)
+                if tables and len(tables[0].records) > 0:
+                    val = float(tables[0].records[0].get_value())
+                    pv_buffer.append(val)
+                    if len(pv_buffer) > required_samples:
+                        pv_buffer.pop(0)
+
+                    if len(pv_buffer) == required_samples:
+                        mean_pv = sum(pv_buffer) / len(pv_buffer)
+                        variance = sum((x - mean_pv) ** 2 for x in pv_buffer) / len(
+                            pv_buffer
+                        )
+                        error = abs(mean_pv - initial_sp)
+
+                        # Validate that the ball is hovering within steady envelope
+                        if error <= 6.0 and variance <= 6.0:
+                            elapsed = time.perf_counter() - t0
+                            logger.info(
+                                ">>> PRE-FLIGHT CONVERGED: SP=%.1f%% achieved in %.2fs (Variance: %.2f). Commencing evaluation. <<<",
+                                initial_sp,
+                                elapsed,
+                                variance,
+                            )
+                            return
+            except Exception as err:
+                logger.debug("Telemetry polling error: %s", err)
+
+            time.sleep(0.2)
+
+        logger.warning(
+            "[Pre-Flight Warning] Dynamic runway timed out after %.1fs. Proceeding with trial...",
+            max_runway_sec,
         )
 
     def export_trial_csv(self, config: BaselineTrialConfig) -> None:
@@ -162,13 +200,11 @@ class BaselineOrchestrator:
 
             target_path = os.path.join(self.data_export_dir, config.export_filename)
             if not df.empty:
-                # Harmonize algorithm name within telemetry snapshot
                 if "algorithm" in df.columns:
                     df["algorithm"] = df["algorithm"].replace({"baseline": "discrete"})
                 else:
                     df["algorithm"] = config.algorithm
 
-                # Plant and geometry metadata
                 df["tube_type"] = config.tube_type
                 df["tube_length_cm"] = config.tube_length_cm
                 df["tube_inner_dia_mm"] = config.tube_inner_dia_mm
@@ -205,12 +241,14 @@ class BaselineOrchestrator:
             logger.error("InfluxDB query failure for '%s': %s", config.trial_id, err)
 
     def execute_dynamic_trial(
-        self, config: BaselineTrialConfig, runway_duration: float = 30.0
+        self, config: BaselineTrialConfig, runway_duration: float = 35.0
     ) -> None:
-        """Executes a dynamic step sequence with pre-flight stabilization."""
+        """Executes a dynamic step sequence with adaptive pre-flight stabilization."""
         try:
             initial_sp = config.phases[0].setpoint
-            self.run_preflight_runway(initial_sp=initial_sp, runway_sec=runway_duration)
+            self.run_preflight_runway(
+                initial_sp=initial_sp, max_runway_sec=runway_duration
+            )
 
             logger.info(
                 "=== Launching Dynamic Baseline: %s [Tube: %s | Algorithm: %s] ===",
@@ -240,12 +278,11 @@ class BaselineOrchestrator:
             self.stop_c2_actuation()
             self.tc.clear_rules()
 
-        time.sleep(2.0)  # Telemetry write flush window
+        time.sleep(2.0)
         self.export_trial_csv(config)
 
 
 def get_step_profile(tube_type: str, total_duration: float) -> list[StepPhase]:
-    """Generates operating step profiles matched to tube aerodynamic limits."""
     if tube_type == "cardboard":
         setpoints = [72.0, 82.0, 90.0, 75.0, 85.0]
     else:
@@ -282,8 +319,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--runway",
         type=float,
-        default=30.0,
-        help="Pre-flight stabilization runway in seconds (default: 30.0s)",
+        default=35.0,
+        help="Pre-flight stabilization runway budget in seconds (default: 35.0s)",
     )
     parser.add_argument(
         "--interface",

@@ -2,7 +2,7 @@
 """
 scripts/test/run_sweeps.py
 Automated parameter sweep orchestrator and telemetry snapshot pipeline.
-Coordinates tc/netem kernel qdiscs, C2 REST states, and standardized InfluxDB CSV exports.
+Coordinates tc/netem kernel qdiscs, C2 REST states, dynamic stabilization, and InfluxDB CSV exports.
 """
 
 import argparse
@@ -125,6 +125,39 @@ class SweepOrchestrator:
         except requests.RequestException:
             pass
 
+    def wait_for_settled_state(
+        self, target_sp: float = 50.0, max_wait_sec: float = 20.0
+    ) -> None:
+        """Ensures plant has settled at target_sp prior to applying impairment injections."""
+        query_api = self.influx_client.query_api()
+        t0 = time.perf_counter()
+        pv_buf: list[float] = []
+
+        while (time.perf_counter() - t0) < max_wait_sec:
+            flux_query = f"""
+            from(bucket: "{self.influx_bucket}")
+              |> range(start: -2s)
+              |> filter(fn: (r) => r["_measurement"] == "control_telemetry")
+              |> filter(fn: (r) => r["_field"] == "process_variable")
+              |> last()
+            """
+            try:
+                tables = query_api.query(flux_query)
+                if tables and len(tables[0].records) > 0:
+                    val = float(tables[0].records[0].get_value())
+                    pv_buf.append(val)
+                    if len(pv_buf) > 15:
+                        pv_buf.pop(0)
+
+                    if len(pv_buf) == 15:
+                        mean_pv = sum(pv_buf) / 15.0
+                        variance = sum((x - mean_pv) ** 2 for x in pv_buf) / 15.0
+                        if abs(mean_pv - target_sp) <= 4.0 and variance < 2.0:
+                            return
+            except Exception:
+                pass
+            time.sleep(0.2)
+
     def export_trial_csv(self, trial_id: str, filename: str) -> None:
         """Extract synchronized trial time-series from InfluxDB and save as standardized CSV."""
         query_api = self.influx_client.query_api()
@@ -175,11 +208,17 @@ class SweepOrchestrator:
     def run_trial(self, config: TrialConfig) -> None:
         """Execute an isolated step response trial under target network conditions."""
         try:
-            self.tc.apply_netem(config.netem_args)
+            # Clean link & stabilize at setpoint before applying impairment
+            self.tc.clear_rules()
             if not self.set_c2_state(
-                config.algorithm, config.setpoint, config.trial_id
+                config.algorithm, config.setpoint, f"pre_{config.trial_id}"
             ):
-                raise RuntimeError("C2 rejected control configuration.")
+                raise RuntimeError("C2 rejected control initialization.")
+            self.wait_for_settled_state(target_sp=config.setpoint, max_wait_sec=15.0)
+
+            # Inject impairment & commence formal evaluation
+            self.tc.apply_netem(config.netem_args)
+            self.set_c2_state(config.algorithm, config.setpoint, config.trial_id)
 
             time.sleep(config.duration_sec)
 
@@ -187,13 +226,12 @@ class SweepOrchestrator:
             self.stop_c2_actuation()
             self.tc.clear_rules()
 
-        time.sleep(1.5)  # Buffer flush allowance
+        time.sleep(1.5)
         self.export_trial_csv(config.trial_id, config.export_filename)
 
     def _generate_trial_matrix(
         self, v1_dur: float, v2_dur: float, v3_dur: float
     ) -> list[TrialConfig]:
-        """Pre-computes the entire experimental execution queue with standardized names."""
         trials: list[TrialConfig] = []
         batch_ts = time.strftime("%Y%m%d_%H%M%S")
 
@@ -252,7 +290,6 @@ class SweepOrchestrator:
         return trials
 
     def execute_matrix(self, v1_dur: float, v2_dur: float, v3_dur: float) -> None:
-        """Execute automated benchmark sweeps with dynamic ETA tracking."""
         trials = self._generate_trial_matrix(v1_dur, v2_dur, v3_dur)
         total_trials = len(trials)
         logger.info(
@@ -262,7 +299,7 @@ class SweepOrchestrator:
         start_time = time.time()
         for idx, config in enumerate(trials, start=1):
             if idx == 1:
-                eta_seconds = (config.duration_sec + 1.5) * total_trials
+                eta_seconds = (config.duration_sec + 5.0) * total_trials
             else:
                 elapsed = time.time() - start_time
                 avg_time_per_trial = elapsed / (idx - 1)
@@ -283,7 +320,6 @@ class SweepOrchestrator:
 
 
 def prompt_and_execute_postprocessing() -> None:
-    """Prompt the operator to trigger the data aggregation pipeline."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     postprocess_script = os.path.normpath(
         os.path.join(current_dir, "..", "analysis", "aggregate_and_postprocess.py")

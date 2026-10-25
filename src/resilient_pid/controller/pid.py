@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 src/resilient_pid/controller/pid.py
-Discrete PID controller with anti-windup clamping and derivative filtering.
-Provides primary (discrete) actuation and integral hold logic for loss events.
+Canonical Discrete PID controller with hover feedforward, accelerated takeoff ramp,
+calibrated acoustic noise filtering, and smooth high-elevation release.
 """
 
 from dataclasses import dataclass
@@ -10,42 +10,32 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class PIDConfig:
-    """Canonical loop gains, anti-windup saturation bounds, and filtering constants."""
+    """Canonical loop gains, anti-windup bounds, and feedforward constants."""
 
-    kp: float = 0.16
-    ki: float = 0.025
-    kd: float = 0.12
+    kp: float = 0.16  # Proportional stiffness
+    ki: float = 0.022  # Steady-state error elimination
+    kd: float = 0.15  # Damping gain
     dt: float = 0.05
-    output_limits: tuple[float, float] = (0.0, 78.0)
-    integral_limits: tuple[float, float] = (0.0, 70.0)
-    derivative_filter_tau: float = 0.35
+    ff_hover: float = 33.5  # Calibrated empirical float equilibrium for SP ~ 50%
+    ki_takeoff: float = 0.14  # Accelerated takeoff gain (liftoff in ~2.5s)
+    output_limits: tuple[float, float] = (20.0, 75.0)  # In-flight operational envelope
+    integral_limits: tuple[float, float] = (-12.0, 30.0)
+    derivative_filter_tau: float = 0.35  # Suppresses ultrasonic echo jitter
 
 
 class DiscretePID:
     """
-    Discrete-time PID controller.
-    Supports anti-windup clamping, low-pass derivative filtering, and freeze-on-loss.
+    Discrete-time PID controller with continuous aerodynamic damping.
     """
 
     def __init__(self, config: PIDConfig | None = None, **overrides):
-        """
-        Initialize discrete PID gains and operational bounds.
-
-        Args:
-            kp (float): Proportional gain.
-            ki (float): Integral gain.
-            kd (float): Derivative gain.
-            dt (float): Sampling interval in seconds.
-            output_limits (Tuple[float, float]): Output saturation bounds (min, max).
-            integral_limits (Tuple[float, float]): Internal integrator saturation bounds (min, max).
-            derivative_filter_tau (float): Filter time constant for derivative term.
-        """
-
         self.cfg = config or PIDConfig()
         self.kp: float = float(overrides.get("kp", self.cfg.kp))
         self.ki: float = float(overrides.get("ki", self.cfg.ki))
         self.kd: float = float(overrides.get("kd", self.cfg.kd))
         self.dt: float = float(overrides.get("dt", self.cfg.dt))
+        self.ff_hover: float = float(overrides.get("ff_hover", self.cfg.ff_hover))
+        self.ki_takeoff: float = float(overrides.get("ki_takeoff", self.cfg.ki_takeoff))
         self.output_limits: tuple[float, float] = overrides.get(
             "output_limits", self.cfg.output_limits
         )
@@ -55,33 +45,49 @@ class DiscretePID:
         self.tau: float = float(
             overrides.get("derivative_filter_tau", self.cfg.derivative_filter_tau)
         )
-        # Pre-charge integrator near baseline float equilibrium
-        self.integral = self.integral_limits[0]
+
+        self.integral = 0.0
         self.prev_pv: float | None = None
         self.filtered_derivative = 0.0
+        self._liftoff_armed = False
+        self._floor_confirm_count = 0
 
     def reset(self) -> None:
-        """Reset internal integrator, previous PV, and derivative registers."""
-        self.integral = self.integral_limits[0]
+        """Reset internal integrator, registers, and state flags."""
+        self.integral = 0.0
         self.prev_pv = None
         self.filtered_derivative = 0.0
+        self._liftoff_armed = False
+        self._floor_confirm_count = 0
 
     def update(self, setpoint: float, pv: float, is_loss: bool = False) -> float:
         """
         Calculate saturated discrete PID control output u[k].
-        Derivative on Measurement (PV) to eliminate setpoint derivative kick.
-
-        Args:
-            setpoint (float): Target reference value SP[k].
-            pv (float): Measured process variable feedback PV[k].
-            is_loss (bool): Packet loss indicator; suspends integration when True.
-
-        Returns:
-            float: Saturated control effort u[k] bounded by output_limits.
         """
+        if setpoint <= 0.0:
+            self.reset()
+            return 0.0
+
         error = setpoint - pv
 
         if not is_loss:
+            # 1. Floor confirmation debounce (requires 3 consecutive samples < 12%)
+            if pv < 12.0:
+                self._floor_confirm_count += 1
+                if self._floor_confirm_count >= 3:
+                    self._liftoff_armed = True
+            else:
+                self._floor_confirm_count = 0
+
+            # 2. Takeoff dislodge check:
+            # When ball crosses PV >= 16% from the floor, clear accumulated takeoff integral
+            # and hand off cleanly to the hover feedforward baseline.
+            just_dislodged = False
+            if self._liftoff_armed and pv >= 16.0:
+                self.integral = 0.0
+                self._liftoff_armed = False
+                just_dislodged = True
+
             # Low-pass filtered derivative on measurement (dPV/dt)
             if self.prev_pv is None:
                 self.prev_pv = pv
@@ -94,17 +100,20 @@ class DiscretePID:
 
             # Evaluate tentative unconstrained output
             d_term = self.kd * self.filtered_derivative
-            u_tentative = (self.kp * error) + self.integral - d_term
+            u_tentative = self.ff_hover + (self.kp * error) + self.integral - d_term
 
-            # Clamping Anti-Windup: only integrate if output is not saturated,
-            # or if integration acts to pull the output back inside limits
-            u_min, u_max = self.output_limits
-            if u_min < u_tentative < u_max:
-                self.integral += self.ki * error * self.dt
-            elif u_tentative >= u_max and error < 0:
-                self.integral += self.ki * error * self.dt
-            elif u_tentative <= u_min and error > 0:
-                self.integral += self.ki * error * self.dt
+            # Integral accumulation (bypassed on immediate dislodge transition)
+            if not just_dislodged:
+                active_ki = (
+                    self.ki_takeoff if (self._liftoff_armed and pv < 14.0) else self.ki
+                )
+                u_min, u_max = self.output_limits
+                if u_min < u_tentative < u_max:
+                    self.integral += active_ki * error * self.dt
+                elif u_tentative >= u_max and error < 0:
+                    self.integral += active_ki * error * self.dt
+                elif u_tentative <= u_min and error > 0:
+                    self.integral += active_ki * error * self.dt
 
             # Bound integral state accumulator
             i_min, i_max = self.integral_limits
@@ -113,7 +122,17 @@ class DiscretePID:
             d_term = 0.0
 
         u_unclamped = (
-            (self.kp * error) + self.integral - (self.kd * self.filtered_derivative)
+            self.ff_hover
+            + (self.kp * error)
+            + self.integral
+            - (self.kd * self.filtered_derivative)
         )
-        u_min, u_max = self.output_limits
-        return float(max(u_min, min(u_max, u_unclamped)))
+
+        # Ceiling escape: if trapped >= 80%, allow duty down to 18.0% to break Bernoulli suction
+        if pv >= 80.0:
+            effective_u_min = 18.0
+            self.integral = min(0.0, self.integral)
+        else:
+            effective_u_min = self.output_limits[0]
+
+        return float(max(effective_u_min, min(self.output_limits[1], u_unclamped)))

@@ -383,7 +383,9 @@ class HardwarePlant(BasePlant):
         return (duration * 34300.0) / 2.0
 
     def _sensor_worker(self) -> None:
-        """Dedicated background thread polling HC-SR04 with acoustic blind-zone mitigation."""
+        """Dedicated background thread polling HC-SR04 with ceiling unlatch automation."""
+        ceiling_latch_counter = 0
+
         while self._running:
             d = self._acquire_distance_cm()
 
@@ -393,18 +395,31 @@ class HardwarePlant(BasePlant):
                 d = self._acquire_distance_cm()
 
             with self._lock:
-                # Blind-zone ceiling lock detection:
-                # If sensor times out (d < 0) or reads extremely short distance (d < 2.0cm)
-                # while the fan duty cycle is high (u > 50%), the ball is pinned at the top aperture.
-                if (
-                    (d < 2.0 or d < 0.0)
-                    and self._last_u_cmd > 50.0
-                    and self._current_pv > 60.0
-                ):
+                # 1. Blind-Zone / Ceiling Trap Detection:
+                # HC-SR04 physical ringing blindband is < 3.8 cm.
+                # If d is beneath deadband OR times out while fan is active,
+                # the ball is physically occluding the sensor aperture.
+                is_trapped_at_ceiling = (0.0 <= d < 3.8) or (
+                    d < 0.0 and self._last_u_cmd >= 32.0 and self._current_pv > 35.0
+                )
+
+                if is_trapped_at_ceiling:
                     self._miss_count = 0
                     self._last_distance_cm = self.d_min_cm
-                    self._current_pv = 100.0
-                elif 1.0 <= d <= (self.d_max_cm + 5.0):
+                    self._current_pv = 100.0  # Report true physical elevation (100%)
+                    ceiling_latch_counter += 1
+
+                    # Active Ceiling Unlatch Pulse:
+                    # If ball remains trapped at top for > 15 cycles (~500ms),
+                    # momentarily dump fan PWM to break Bernoulli/Coanda ceiling suction.
+                    if ceiling_latch_counter > 15:
+                        self.set_fan_pwm(20.0)
+                        time.sleep(0.35)
+                        ceiling_latch_counter = 0
+                        continue
+
+                elif 3.8 <= d <= (self.d_max_cm + 5.0):
+                    ceiling_latch_counter = 0
                     self._miss_count = 0
                     self._last_distance_cm = d
 
@@ -422,7 +437,9 @@ class HardwarePlant(BasePlant):
                         ) * 100.0
 
                     self._current_pv = float(np.clip(pv_normalized, 0.0, 100.0))
+
                 else:
+                    ceiling_latch_counter = 0
                     self._miss_count += 1
                     if self._miss_count % 20 == 0:
                         logger.warning(
@@ -430,6 +447,9 @@ class HardwarePlant(BasePlant):
                             self._miss_count,
                             d,
                         )
+                    # If echo is completely lost while fan is idling, ball has dropped to floor
+                    if self._last_u_cmd <= 33.5:
+                        self._current_pv = 0.0
 
             time.sleep(0.035)
 
@@ -534,7 +554,6 @@ def run_op_test(
         plant.tube_length_cm,
     )
 
-    # Sanity check: verify physical distance matches expected chamber length
     tube_delta = abs(baseline_dist_cm - plant.tube_length_cm)
     if tube_delta > 5.0:
         logger.warning(
