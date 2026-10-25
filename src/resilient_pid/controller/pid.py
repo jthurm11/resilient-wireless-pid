@@ -61,9 +61,7 @@ class DiscretePID:
         self._floor_confirm_count = 0
 
     def update(self, setpoint: float, pv: float, is_loss: bool = False) -> float:
-        """
-        Calculate saturated discrete PID control output u[k].
-        """
+        """Calculate saturated discrete PID control output u[k]."""
         if setpoint <= 0.0:
             self.reset()
             return 0.0
@@ -71,7 +69,7 @@ class DiscretePID:
         error = setpoint - pv
 
         if not is_loss:
-            # 1. Floor confirmation debounce (requires 3 consecutive samples < 12%)
+            # Floor confirmation debounce (requires 3 consecutive samples < 12%)
             if pv < 12.0:
                 self._floor_confirm_count += 1
                 if self._floor_confirm_count >= 3:
@@ -79,30 +77,29 @@ class DiscretePID:
             else:
                 self._floor_confirm_count = 0
 
-            # 2. Takeoff dislodge check:
-            # When ball crosses PV >= 16% from the floor, clear accumulated takeoff integral
-            # and hand off cleanly to the hover feedforward baseline.
+            # Takeoff dislodge hand-off to hover baseline
             just_dislodged = False
             if self._liftoff_armed and pv >= 16.0:
                 self.integral = 0.0
                 self._liftoff_armed = False
                 just_dislodged = True
 
-            # Low-pass filtered derivative on measurement (dPV/dt)
+            # Derivative on measurement with physical velocity slew-clamp
+            #   Max ballistic speed in duct ~ 2.5 m/s (~550% PV/sec -> max |delta_pv| ~ 27.5% per 50ms)
             if self.prev_pv is None:
                 self.prev_pv = pv
 
             delta_pv = pv - self.prev_pv
-            raw_d_pv = delta_pv / self.dt
+            delta_pv_clamped = max(-25.0, min(25.0, delta_pv))
+            raw_d_pv = delta_pv_clamped / self.dt
             alpha = self.dt / (self.tau + self.dt)
             self.filtered_derivative += alpha * (raw_d_pv - self.filtered_derivative)
             self.prev_pv = pv
 
-            # Evaluate tentative unconstrained output
             d_term = self.kd * self.filtered_derivative
             u_tentative = self.ff_hover + (self.kp * error) + self.integral - d_term
 
-            # Integral accumulation (bypassed on immediate dislodge transition)
+            # Integral anti-windup clamping
             if not just_dislodged:
                 active_ki = (
                     self.ki_takeoff if (self._liftoff_armed and pv < 14.0) else self.ki
@@ -115,20 +112,15 @@ class DiscretePID:
                 elif u_tentative <= u_min and error > 0:
                     self.integral += active_ki * error * self.dt
 
-            # Bound integral state accumulator
             i_min, i_max = self.integral_limits
             self.integral = max(i_min, min(i_max, self.integral))
         else:
+            # Under packet loss, freeze derivative contribution
             d_term = 0.0
 
-        u_unclamped = (
-            self.ff_hover
-            + (self.kp * error)
-            + self.integral
-            - (self.kd * self.filtered_derivative)
-        )
+        u_unclamped = self.ff_hover + (self.kp * error) + self.integral - d_term
 
-        # Ceiling escape: if trapped >= 80%, allow duty down to 18.0% to break Bernoulli suction
+        # High-elevation release: drop minimum floor down to 18.0% to break Bernoulli suction
         if pv >= 80.0:
             effective_u_min = 18.0
             self.integral = min(0.0, self.integral)

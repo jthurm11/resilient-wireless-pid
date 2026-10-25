@@ -326,6 +326,7 @@ class ControllerRuntime:
         next_tick = time.perf_counter()
         last_tick = time.perf_counter()
         mock_pv = 0.0
+        was_running = False  # Track running state transitions
 
         for _ in range(self.args.steps if self.args.no_c2 else sys.maxsize):
             if self._stop_event.is_set():
@@ -336,17 +337,43 @@ class ControllerRuntime:
             last_tick = now
 
             with self.lock:
-                if not self.is_running:
-                    for ctrl in self.controllers.values():
-                        ctrl.reset()
-                    self.seq_num = 0
-                    self.expected_rx_seq = None
-                    self.last_known_pv = 0.0
-                    self.last_u = 0.0
-                    self._drain_socket_buffer()
-                    time.sleep(0.01)
+                active_is_running = self.is_running and (self.setpoint > 0.0)
+
+                if not active_is_running:
+                    # FALLING EDGE DETECTOR: Just transitioned from running to stopped
+                    if was_running:
+                        logger.info(
+                            ">>> ACTIVE CONTROL STOPPED: De-energizing plant blower (u=0.0%) <<<"
+                        )
+                        for ctrl in self.controllers.values():
+                            ctrl.reset()
+                        self.seq_num = 0
+                        self.expected_rx_seq = None
+                        self.last_u = 0.0
+
+                        # Dispatch zero-duty datagrams to physical plant over the active socket
+                        if self._socket is not None and not self.args.mock_loop:
+                            stop_pkt = json.dumps(
+                                {"seq": 0, "u": 0.0, "t_send": time.perf_counter()}
+                            ).encode("utf-8")
+                            for _ in range(3):
+                                try:
+                                    self._socket.sendto(stop_pkt, self.plant_addr)
+                                except OSError as err:
+                                    logger.error(
+                                        "Failed to transmit stop frame: %s", err
+                                    )
+                                time.sleep(0.005)
+
+                        self._drain_socket_buffer()
+                        was_running = False
+
+                    time.sleep(0.05)
                     next_tick = time.perf_counter()
                     continue
+
+                # If running and setpoint > 0, mark active
+                was_running = True
                 active_mode = self.mode
                 sp = self.setpoint
                 dt = self.dt
@@ -433,9 +460,14 @@ class ControllerRuntime:
                                 break
 
                         if rx_frame is not None:
-                            current_pv = float(rx_frame["pv"])
-                            self.last_known_pv = current_pv
-                            is_loss = False
+                            raw_pv = float(rx_frame["pv"])
+                            # Reject transient zero-drops during active flight
+                            if raw_pv == 0.0 and self.last_known_pv >= 40.0:
+                                is_loss = True
+                            else:
+                                current_pv = raw_pv
+                                self.last_known_pv = current_pv
+                                is_loss = False
                         else:
                             is_loss = True
                             rtt_ms = None

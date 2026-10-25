@@ -9,6 +9,7 @@ import argparse
 import logging
 import os
 import time
+from typing import TypedDict
 
 from flask import Flask, jsonify, render_template_string, request
 
@@ -22,12 +23,25 @@ logger = logging.getLogger("C2Server")
 
 app = Flask(__name__)
 
+
+class SystemState(TypedDict):
+    """Schema definition for the C2 runtime shared state."""
+
+    is_running: bool
+    trial_id: str
+    algorithm: str
+    setpoint: float
+    active_profile: str
+    ui_enabled: bool
+    updated_at: float
+
+
 # Shared runtime state
-system_state = {
+system_state: SystemState = {
     "is_running": False,
     "trial_id": f"trial_{int(time.time())}",
     "algorithm": "discrete",  # discrete | smith | resilient
-    "setpoint": 50.0,  # Target process variable (0-100%)
+    "setpoint": 50.0,
     "active_profile": "nominal",
     "ui_enabled": False,  # Dynamic UI toggle
     "updated_at": time.time(),
@@ -40,9 +54,10 @@ MINIMAL_HTML = """
 <body style="font-family: monospace; padding: 2rem; background: #1a1a1a; color: #eee;">
   <h2>DCS C2 Diagnostic Console</h2>
   <p id="status">Status: Connecting...</p>
-  <button onclick="send(true)">Start Loop</button>
-  <button onclick="send(false)">Stop Loop</button>
-  <input type="number" id="sp" value="50" style="width: 60px;">
+  <button onclick="send(true)" style="background: #2e7d32; color: white; padding: 0.5rem 1rem;">Start Loop</button>
+  <button onclick="stopActuation()" style="background: #c62828; color: white; padding: 0.5rem 1rem;">Stop Loop</button>
+  <br><br>
+  <input type="number" id="sp" value="60" style="width: 60px; padding: 0.3rem;">
   <button onclick="updateSP()">Set SP</button>
 
   <script>
@@ -63,12 +78,19 @@ MINIMAL_HTML = """
       });
       poll();
     }
+    async function stopActuation() {
+      await fetch('/api/stop', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+      });
+      poll();
+    }
     async function updateSP() {
       const val = parseFloat(document.getElementById('sp').value);
       await fetch('/api/control', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({setpoint: val})
+        body: JSON.stringify({setpoint: val, is_running: true})
       });
       poll();
     }
@@ -103,16 +125,22 @@ def get_status():
 @app.route("/api/control", methods=["POST"])
 def update_control():
     payload = request.get_json(force=True)
-    for key in [
-        "is_running",
-        "setpoint",
-        "algorithm",
-        "trial_id",
-        "active_profile",
-        "ui_enabled",
-    ]:
-        if key in payload:
-            system_state[key] = payload[key]
+    if "is_running" in payload:
+        system_state["is_running"] = bool(payload["is_running"])
+    if "setpoint" in payload:
+        system_state["setpoint"] = float(payload["setpoint"])
+    if "algorithm" in payload:
+        system_state["algorithm"] = str(payload["algorithm"])
+    if "trial_id" in payload:
+        system_state["trial_id"] = str(payload["trial_id"])
+    if "active_profile" in payload:
+        system_state["active_profile"] = str(payload["active_profile"])
+    if "ui_enabled" in payload:
+        system_state["ui_enabled"] = bool(payload["ui_enabled"])
+
+    if payload.get("is_running") is False:
+        system_state["setpoint"] = 0.0
+
     system_state["updated_at"] = time.time()
     logger.info(
         "C2 State: Running=%s, Alg=%s, SP=%.2f, UI=%s, Trial=%s",
@@ -129,18 +157,40 @@ def update_control():
 def start_trial():
     payload = request.get_json(silent=True) or {}
     system_state["is_running"] = True
-    system_state["trial_id"] = payload.get(
-        "trial_id", f"{system_state['algorithm']}_{int(time.time())}"
+    system_state["trial_id"] = str(
+        payload.get("trial_id", f"{system_state['algorithm']}_{int(time.time())}")
     )
+    if "setpoint" in payload:
+        system_state["setpoint"] = float(payload["setpoint"])
+    elif float(system_state["setpoint"]) <= 0.0:
+        system_state["setpoint"] = 50.0
+
     system_state["updated_at"] = time.time()
-    return jsonify({"status": "started", "trial_id": system_state["trial_id"]}), 200
+    logger.info(
+        "Trial started: %s (SP: %.1f%%)",
+        system_state["trial_id"],
+        system_state["setpoint"],
+    )
+    return jsonify(
+        {
+            "status": "started",
+            "trial_id": system_state["trial_id"],
+            "setpoint": system_state["setpoint"],
+        }
+    ), 200
 
 
 @app.route("/api/stop", methods=["POST"])
 def stop_trial():
+    """
+    Safely halts active control loop and zeroes setpoint in state engine.
+    """
     system_state["is_running"] = False
+    system_state["setpoint"] = 0.0
     system_state["updated_at"] = time.time()
-    return jsonify({"status": "stopped"}), 200
+
+    logger.info("C2 Stop invoked: Controller loop disengaged and setpoint zeroed.")
+    return jsonify({"status": "stopped", "actuator": 0.0, "setpoint": 0.0}), 200
 
 
 def parse_args():
