@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
 scripts/test/run_sweeps.py
-Automated parameter sweep orchestrator and telemetry snapshot pipeline.
-Coordinates tc/netem kernel qdiscs, C2 REST states, dynamic stabilization, and InfluxDB CSV exports.
+Automated network impairment parameter sweep orchestrator.
+Optimized for unattended execution across dead-time, jitter, and burst loss distributions.
 """
 
 import argparse
 import logging
 import os
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 
@@ -117,16 +116,31 @@ class SweepOrchestrator:
             return False
 
     def stop_c2_actuation(self) -> None:
-        """Issue halt signal to C2 REST API to disengage plant actuation."""
-        endpoint = f"{self.c2_url}/api/stop"
+        """
+        Signals C2 REST API to halt and commands SP=0.0 to actively de-energize the fan driver.
+        """
         try:
-            requests.post(endpoint, timeout=3.0)
-            logger.info("C2 actuation safely de-energized.")
+            requests.post(
+                f"{self.c2_url}/api/control",
+                json={
+                    "is_running": False,
+                    "algorithm": "discrete",
+                    "setpoint": 0.0,
+                    "trial_id": "idle",
+                },
+                timeout=2.0,
+            )
+        except requests.RequestException:
+            pass
+
+        try:
+            requests.post(f"{self.c2_url}/api/stop", timeout=3.0)
+            logger.info("Plant blower safely de-energized (PWM zeroed).")
         except requests.RequestException:
             pass
 
     def wait_for_settled_state(
-        self, target_sp: float = 50.0, max_wait_sec: float = 20.0
+        self, target_sp: float = 60.0, max_wait_sec: float = 25.0
     ) -> None:
         """Ensures plant has settled at target_sp prior to applying impairment injections."""
         query_api = self.influx_client.query_api()
@@ -152,7 +166,7 @@ class SweepOrchestrator:
                     if len(pv_buf) == 15:
                         mean_pv = sum(pv_buf) / 15.0
                         variance = sum((x - mean_pv) ** 2 for x in pv_buf) / 15.0
-                        if abs(mean_pv - target_sp) <= 4.0 and variance < 2.0:
+                        if abs(mean_pv - target_sp) <= 4.5 and variance < 3.5:
                             return
             except Exception:
                 pass
@@ -214,7 +228,7 @@ class SweepOrchestrator:
                 config.algorithm, config.setpoint, f"pre_{config.trial_id}"
             ):
                 raise RuntimeError("C2 rejected control initialization.")
-            self.wait_for_settled_state(target_sp=config.setpoint, max_wait_sec=15.0)
+            self.wait_for_settled_state(target_sp=config.setpoint, max_wait_sec=20.0)
 
             # Inject impairment & commence formal evaluation
             self.tc.apply_netem(config.netem_args)
@@ -223,7 +237,6 @@ class SweepOrchestrator:
             time.sleep(config.duration_sec)
 
         finally:
-            self.stop_c2_actuation()
             self.tc.clear_rules()
 
         time.sleep(1.5)
@@ -234,6 +247,7 @@ class SweepOrchestrator:
     ) -> list[TrialConfig]:
         trials: list[TrialConfig] = []
         batch_ts = time.strftime("%Y%m%d_%H%M%S")
+        target_sp = 60.0  # Calibrated aerodynamic sweet spot for acrylic column
 
         # Vector 1: Dead-time sweeps (discrete vs smith)
         for rtt_ms in range(10, 110, 10):
@@ -244,7 +258,7 @@ class SweepOrchestrator:
                     TrialConfig(
                         trial_id=t_id,
                         algorithm=algo,
-                        setpoint=50.0,
+                        setpoint=target_sp,
                         netem_args=["delay", f"{rtt_ms // 2}ms"],
                         duration_sec=v1_dur,
                         export_filename=fname,
@@ -264,7 +278,7 @@ class SweepOrchestrator:
                     TrialConfig(
                         trial_id=t_id,
                         algorithm=algo,
-                        setpoint=50.0,
+                        setpoint=target_sp,
                         netem_args=args,
                         duration_sec=v2_dur,
                         export_filename=fname,
@@ -280,7 +294,7 @@ class SweepOrchestrator:
                     TrialConfig(
                         trial_id=t_id,
                         algorithm=algo,
-                        setpoint=50.0,
+                        setpoint=target_sp,
                         netem_args=["loss", f"{loss_pct}%", "25%"],
                         duration_sec=v3_dur,
                         export_filename=fname,
@@ -317,43 +331,6 @@ class SweepOrchestrator:
                 config.duration_sec,
             )
             self.run_trial(config)
-
-
-def prompt_and_execute_postprocessing() -> None:
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    postprocess_script = os.path.normpath(
-        os.path.join(current_dir, "..", "analysis", "aggregate_and_postprocess.py")
-    )
-    display_path = (
-        os.path.relpath(postprocess_script)
-        if "resilient-wireless-pid" in current_dir
-        else postprocess_script
-    )
-    manual_cmd = f"python3 {display_path}"
-
-    try:
-        choice = (
-            input(
-                "\n[?] Sweep complete. Execute data aggregation and post-processing? (y/N): "
-            )
-            .strip()
-            .lower()
-        )
-        if choice in ["y", "yes"]:
-            logger.info("Launching post-processing pipeline...")
-            subprocess.run([sys.executable, postprocess_script], check=True)
-        else:
-            logger.info(
-                "Post-processing skipped. To run manually later, execute:\n\t%s",
-                manual_cmd,
-            )
-    except subprocess.CalledProcessError as e:
-        logger.error("Post-processing script failed with exit code %d.", e.returncode)
-    except KeyboardInterrupt:
-        print()
-        logger.info(
-            "Post-processing aborted. To run manually later, execute:\n\t%s", manual_cmd
-        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -424,10 +401,8 @@ def main() -> None:
 
     logger.info("Starting automated parameter sweeps on interface %s", args.interface)
 
-    sweep_completed_successfully = False
     try:
         orchestrator.execute_matrix(v1_dur=v1_dur, v2_dur=v2_dur, v3_dur=v3_dur)
-        sweep_completed_successfully = True
     except KeyboardInterrupt:
         logger.warning("Interrupted by operator; cleaning up qdisc rules...")
         orchestrator.tc.clear_rules()
@@ -436,27 +411,11 @@ def main() -> None:
         logger.error("Fatal error during sweep execution: %s", e)
         orchestrator.tc.clear_rules()
         orchestrator.stop_c2_actuation()
-    finally:
-        logger.info("Sweep execution sequence terminated.")
-
-        if sweep_completed_successfully:
-            prompt_and_execute_postprocessing()
-        else:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            postprocess_script = os.path.normpath(
-                os.path.join(
-                    current_dir, "..", "analysis", "aggregate_and_postprocess.py"
-                )
-            )
-            display_path = (
-                os.path.relpath(postprocess_script)
-                if "resilient-wireless-pid" in current_dir
-                else postprocess_script
-            )
-            logger.info(
-                "Execution was aborted. If you wish to aggregate partial data, manually execute:\n\tpython3 %s",
-                display_path,
-            )
+        orchestrator.tc.clear_rules()
+        logger.info(
+            "Sweep batch concluded. Actuator de-energized. Data saved in %s",
+            orchestrator.data_export_dir,
+        )
 
 
 if __name__ == "__main__":

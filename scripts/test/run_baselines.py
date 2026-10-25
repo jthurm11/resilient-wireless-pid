@@ -91,7 +91,7 @@ class BaselineOrchestrator:
         )
 
     def set_c2_state(self, algorithm: str, setpoint: float, trial_id: str) -> bool:
-        """Dispatches active control law and setpoint target to C2 REST API."""
+        """Dispatch active control law, setpoint, and trial ID to C2 REST API."""
         endpoint = f"{self.c2_url}/api/control"
         payload = {
             "is_running": True,
@@ -102,16 +102,29 @@ class BaselineOrchestrator:
         try:
             resp = requests.post(endpoint, json=payload, timeout=3.0)
             return resp.status_code == 200
-        except requests.RequestException as err:
-            logger.error("C2 REST POST /api/control error: %s", err)
+        except requests.RequestException as e:
+            logger.error("C2 POST /api/control request failed: %s", e)
             return False
 
     def stop_c2_actuation(self) -> None:
-        """Signals C2 REST API to safely de-energize the fan driver."""
-        endpoint = f"{self.c2_url}/api/stop"
+        """Signals C2 REST API to halt and commands SP=0.0 to de-energize the fan driver."""
         try:
-            requests.post(endpoint, timeout=3.0)
-            logger.info("Plant blower safely de-energized.")
+            requests.post(
+                f"{self.c2_url}/api/control",
+                json={
+                    "is_running": False,
+                    "algorithm": "discrete",
+                    "setpoint": 0.0,
+                    "trial_id": "idle",
+                },
+                timeout=2.0,
+            )
+        except requests.RequestException:
+            pass
+
+        try:
+            requests.post(f"{self.c2_url}/api/stop", timeout=3.0)
+            logger.info("Plant blower safely de-energized (PWM zeroed).")
         except requests.RequestException:
             pass
 
@@ -163,10 +176,10 @@ class BaselineOrchestrator:
                         error = abs(mean_pv - initial_sp)
 
                         # Validate that the ball is hovering within steady envelope
-                        if error <= 6.0 and variance <= 6.0:
+                        if error <= 4.5 and variance <= 4.0:
                             elapsed = time.perf_counter() - t0
                             logger.info(
-                                ">>> PRE-FLIGHT CONVERGED: SP=%.1f%% achieved in %.2fs (Variance: %.2f). Commencing evaluation. <<<",
+                                ">>> PRE-FLIGHT CONVERGED: SP=%.1f%% achieved in %.2fs (Variance: %.2f). Launching trial. <<<",
                                 initial_sp,
                                 elapsed,
                                 variance,
@@ -283,10 +296,16 @@ class BaselineOrchestrator:
 
 
 def get_step_profile(tube_type: str, total_duration: float) -> list[StepPhase]:
+    """
+    Returns dynamically scaled step-response profile bounded strictly within
+    the calibrated linear aerodynamic envelope (45% to 70% for acrylic) to
+    prevent aerodynamic floor stall (SP < 35%) and ultrasonic ceiling ringing (SP > 75%).
+    """
     if tube_type == "cardboard":
-        setpoints = [72.0, 82.0, 90.0, 75.0, 85.0]
+        setpoints = [72.0, 80.0, 88.0, 75.0, 85.0]
     else:
-        setpoints = [30.0, 55.0, 75.0, 40.0, 65.0, 80.0]
+        # Calibrated safe flight corridor centered around the 65% stability sweet spot
+        setpoints = [50.0, 65.0, 70.0, 48.0, 65.0, 55.0]
 
     phase_len = total_duration / len(setpoints)
     return [StepPhase(setpoint=sp, duration_sec=phase_len) for sp in setpoints]
