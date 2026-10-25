@@ -20,9 +20,9 @@ try:
     from resilient_pid.controller.smith_predictor import SmithPredictor
 except ImportError:
     from arx_model import ARXModelParams
-    from pid import DiscretePID, PIDConfig
     from smith_predictor import SmithPredictor
 
+    from pid import DiscretePID, PIDConfig
     from resilient_pid import ResilientPID
 
 
@@ -70,15 +70,15 @@ class TestControlMathematics(unittest.TestCase):
         self.assertLess(u_liftoff, 45.0)
 
     def test_discrete_pid_ceiling_suction_escape(self):
-        """Verify that ball entering the ceiling zone (PV >= 80%) drops command to <= 12.0%."""
+        """Verify that ball entering the ceiling zone (PV >= 80%) relieves suction and bounds output."""
         pid = DiscretePID()
 
         # Ball forced into top stop: SP=50, PV=88.0
         u_out = pid.update(setpoint=50.0, pv=88.0, is_loss=False)
 
-        # Actuator must cut deep (<= 15.0%) down to the relaxed floor (8.0% - 12.0%)
-        self.assertLessEqual(u_out, 15.0)
-        self.assertGreaterEqual(u_out, 8.0)
+        # Output must drop below hover equilibrium (33.5%) to allow smooth descent
+        self.assertLess(u_out, 30.0)
+        self.assertGreaterEqual(u_out, 18.0)
         self.assertLessEqual(pid.integral, 0.0)
 
     def test_discrete_pid_anti_windup_clamping(self):

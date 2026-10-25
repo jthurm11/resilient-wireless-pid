@@ -2,7 +2,7 @@
 """
 src/resilient_pid/controller/pid.py
 Canonical Discrete PID controller with hover feedforward, accelerated takeoff ramp,
-calibrated acoustic noise filtering, and high-elevation suction release.
+calibrated acoustic noise filtering, and smooth high-elevation release.
 """
 
 from dataclasses import dataclass
@@ -81,7 +81,7 @@ class DiscretePID:
 
             # 2. Takeoff dislodge check:
             # When ball crosses PV >= 16% from the floor, clear accumulated takeoff integral
-            # and suppress re-integration on this immediate transition frame.
+            # and hand off cleanly to the hover feedforward baseline.
             just_dislodged = False
             if self._liftoff_armed and pv >= 16.0:
                 self.integral = 0.0
@@ -128,11 +128,10 @@ class DiscretePID:
             - (self.kd * self.filtered_derivative)
         )
 
-        # Ceiling escape: if trapped >= 80%, allow duty down to 8.0% to break Bernoulli suction
+        # Ceiling escape: if trapped >= 80%, allow duty down to 18.0% to break Bernoulli suction
         if pv >= 80.0:
-            effective_u_min = 8.0
+            effective_u_min = 18.0
             self.integral = min(0.0, self.integral)
-            u_unclamped = min(u_unclamped, 12.0)
         else:
             effective_u_min = self.output_limits[0]
 
