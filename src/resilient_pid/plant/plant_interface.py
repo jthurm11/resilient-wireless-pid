@@ -260,11 +260,11 @@ class HardwarePlant(BasePlant):
         self.sensor_at_top = sensor_at_top
         self.enable_sensor_thread = enable_sensor_thread
 
-        # Physical Calibration Constants
-        # d_min: Acoustic distance when ball apex touches top aperture (~1.5 cm)
-        # d_max: Acoustic distance when ball rests on bottom fan grille (~45.5 cm)
+        # Calibrated Acoustic Envelope for Acrylic Column:
+        # - d_min_cm: Minimum acoustic line-of-sight to top aperture stop (~1.5 cm)
+        # - d_max_cm: Measured acoustic apex distance to resting sphere on wire mesh (~42.4 cm)
         self.d_min_cm = 1.5
-        self.d_max_cm = self.tube_length_cm
+        self.d_max_cm = 42.4 if tube_type == "acrylic" else self.tube_length_cm
 
         # Thread synchronization state
         self._lock = threading.Lock()
@@ -383,72 +383,50 @@ class HardwarePlant(BasePlant):
         return (duration * 34300.0) / 2.0
 
     def _sensor_worker(self) -> None:
-        """Dedicated background thread polling HC-SR04 with ceiling unlatch automation."""
-        ceiling_latch_counter = 0
-
+        """Asynchronous HC-SR04 poller with physically bounded continuity."""
         while self._running:
             d = self._acquire_distance_cm()
 
-            # Retry once on miss
+            # Bounded retry on miss
             if d < 0.0:
-                time.sleep(0.001)
+                time.sleep(0.002)
                 d = self._acquire_distance_cm()
 
             with self._lock:
-                # 1. Blind-Zone / Ceiling Trap Detection:
-                # HC-SR04 physical ringing blindband is < 3.8 cm.
-                # If d is beneath deadband OR times out while fan is active,
-                # the ball is physically occluding the sensor aperture.
-                is_trapped_at_ceiling = (0.0 <= d < 3.8) or (
-                    d < 0.0 and self._last_u_cmd >= 32.0 and self._current_pv > 35.0
-                )
-
-                if is_trapped_at_ceiling:
+                # Physical Blind-Zone / Transducer Ringing Occlusion
+                #   Transducer blind band is < 3.8 cm (PV >= 91%).
+                #   If ping times out while sphere was recently at high elevation,
+                #   the sphere is physically occluding the transducer face.
+                if (0.0 <= d < 3.8) or (d < 0.0 and self._current_pv >= 70.0):
                     self._miss_count = 0
                     self._last_distance_cm = self.d_min_cm
-                    self._current_pv = 100.0  # Report true physical elevation (100%)
-                    ceiling_latch_counter += 1
+                    self._current_pv = 100.0
 
-                    # Active Ceiling Unlatch Pulse:
-                    # If ball remains trapped at top for > 15 cycles (~500ms),
-                    # momentarily dump fan PWM to break Bernoulli/Coanda ceiling suction.
-                    if ceiling_latch_counter > 15:
-                        self.set_fan_pwm(20.0)
-                        time.sleep(0.35)
-                        ceiling_latch_counter = 0
-                        continue
-
+                # Valid Acoustic Line-of-Sight Window
                 elif 3.8 <= d <= (self.d_max_cm + 5.0):
-                    ceiling_latch_counter = 0
                     self._miss_count = 0
                     self._last_distance_cm = d
-
-                    # Linear normalization across calibrated physical range [d_min, d_max]
                     d_clamped = max(self.d_min_cm, min(self.d_max_cm, d))
+
                     if self.sensor_at_top:
-                        pv_normalized = (
+                        pv_norm = (
                             (self.d_max_cm - d_clamped)
                             / (self.d_max_cm - self.d_min_cm)
                         ) * 100.0
                     else:
-                        pv_normalized = (
+                        pv_norm = (
                             (d_clamped - self.d_min_cm)
                             / (self.d_max_cm - self.d_min_cm)
                         ) * 100.0
 
-                    self._current_pv = float(np.clip(pv_normalized, 0.0, 100.0))
+                    self._current_pv = float(np.clip(pv_norm, 0.0, 100.0))
 
+                # Echo Dropout / Reflection Skew
+                #   Enforce physical velocity constraint: hold previous PV instead of forcing 0.0%.
                 else:
-                    ceiling_latch_counter = 0
                     self._miss_count += 1
-                    if self._miss_count % 20 == 0:
-                        logger.warning(
-                            "HC-SR04: %d consecutive missed pings (last reading: %.1f cm)",
-                            self._miss_count,
-                            d,
-                        )
-                    # If echo is completely lost while fan is idling, ball has dropped to floor
-                    if self._last_u_cmd <= 33.5:
+                    # Only reset to floor if fan is truly idle (< 5% PWM) for sustained duration
+                    if self._last_u_cmd < 5.0 and self._miss_count > 10:
                         self._current_pv = 0.0
 
             time.sleep(0.035)

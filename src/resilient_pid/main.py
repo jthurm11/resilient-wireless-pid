@@ -460,9 +460,14 @@ class ControllerRuntime:
                                 break
 
                         if rx_frame is not None:
-                            current_pv = float(rx_frame["pv"])
-                            self.last_known_pv = current_pv
-                            is_loss = False
+                            raw_pv = float(rx_frame["pv"])
+                            # Reject transient zero-drops during active flight
+                            if raw_pv == 0.0 and self.last_known_pv >= 40.0:
+                                is_loss = True
+                            else:
+                                current_pv = raw_pv
+                                self.last_known_pv = current_pv
+                                is_loss = False
                         else:
                             is_loss = True
                             rtt_ms = None
