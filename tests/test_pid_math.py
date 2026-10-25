@@ -20,9 +20,9 @@ try:
     from resilient_pid.controller.smith_predictor import SmithPredictor
 except ImportError:
     from arx_model import ARXModelParams
+    from pid import DiscretePID, PIDConfig
     from smith_predictor import SmithPredictor
 
-    from pid import DiscretePID, PIDConfig
     from resilient_pid import ResilientPID
 
 

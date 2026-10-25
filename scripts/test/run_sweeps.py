@@ -125,7 +125,9 @@ class SweepOrchestrator:
         except requests.RequestException:
             pass
 
-    def wait_for_settled_state(self, target_sp: float = 50.0, max_wait_sec: float = 20.0) -> None:
+    def wait_for_settled_state(
+        self, target_sp: float = 50.0, max_wait_sec: float = 20.0
+    ) -> None:
         """Ensures plant has settled at target_sp prior to applying impairment injections."""
         query_api = self.influx_client.query_api()
         t0 = time.perf_counter()

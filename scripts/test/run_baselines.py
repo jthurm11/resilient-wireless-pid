@@ -115,7 +115,9 @@ class BaselineOrchestrator:
         except requests.RequestException:
             pass
 
-    def run_preflight_runway(self, initial_sp: float, max_runway_sec: float = 30.0) -> None:
+    def run_preflight_runway(
+        self, initial_sp: float, max_runway_sec: float = 30.0
+    ) -> None:
         """
         Dynamically monitors convergence to initial setpoint before commencing formal trial.
         Waits for steady-state hover (PV near SP with low variance) over a 4-second hold window.
@@ -155,7 +157,9 @@ class BaselineOrchestrator:
 
                     if len(pv_buffer) == required_samples:
                         mean_pv = sum(pv_buffer) / len(pv_buffer)
-                        variance = sum((x - mean_pv) ** 2 for x in pv_buffer) / len(pv_buffer)
+                        variance = sum((x - mean_pv) ** 2 for x in pv_buffer) / len(
+                            pv_buffer
+                        )
                         error = abs(mean_pv - initial_sp)
 
                         # Validate that the ball is hovering within steady envelope
@@ -242,7 +246,9 @@ class BaselineOrchestrator:
         """Executes a dynamic step sequence with adaptive pre-flight stabilization."""
         try:
             initial_sp = config.phases[0].setpoint
-            self.run_preflight_runway(initial_sp=initial_sp, max_runway_sec=runway_duration)
+            self.run_preflight_runway(
+                initial_sp=initial_sp, max_runway_sec=runway_duration
+            )
 
             logger.info(
                 "=== Launching Dynamic Baseline: %s [Tube: %s | Algorithm: %s] ===",
