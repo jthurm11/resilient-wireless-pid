@@ -6,10 +6,8 @@ Runs as a headless REST API with dynamically toggled web UI support.
 """
 
 import argparse
-import json
 import logging
 import os
-import socket
 import time
 from typing import TypedDict
 
@@ -43,42 +41,11 @@ system_state: SystemState = {
     "is_running": False,
     "trial_id": f"trial_{int(time.time())}",
     "algorithm": "discrete",  # discrete | smith | resilient
-    "setpoint": 0.0,  # Setpoint initialized to 0.0 for safety
+    "setpoint": 0.0,          # Initialized to 0.0 for safety
     "active_profile": "nominal",
-    "ui_enabled": False,  # Dynamic UI toggle
+    "ui_enabled": False,      # Dynamic UI toggle
     "updated_at": time.time(),
 }
-
-# Network defaults for direct hardware shutdown fallback
-PLANT_HOST = os.getenv("PLANT_IP", "127.0.0.1")
-PLANT_PORT = int(os.getenv("PLANT_PORT", "5005"))
-
-
-def dispatch_zero_actuation_to_plant() -> bool:
-    """
-    Sends explicit zero-power UDP datagrams to the plant daemon to guarantee
-    the fan does not remain latched at its previous duty cycle.
-    """
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(0.2)
-        pkt = json.dumps({"seq": 0, "u": 0.0, "t_send": time.perf_counter()})
-        payload = pkt.encode("utf-8")
-        # Send redundant datagrams to guard against UDP packet loss
-        for _ in range(3):
-            sock.sendto(payload, (PLANT_HOST, PLANT_PORT))
-            time.sleep(0.005)
-        sock.close()
-        logger.info(
-            "Dispatched zero-actuation shutdown datagram (u=0.0%%) to plant at %s:%d",
-            PLANT_HOST,
-            PLANT_PORT,
-        )
-        return True
-    except Exception as err:
-        logger.warning("Could not dispatch direct plant shutdown frame: %s", err)
-        return False
-
 
 MINIMAL_HTML = """
 <!DOCTYPE html>
@@ -171,10 +138,8 @@ def update_control():
     if "ui_enabled" in payload:
         system_state["ui_enabled"] = bool(payload["ui_enabled"])
 
-    # If control specifically requests running=False, zero setpoint
     if payload.get("is_running") is False:
         system_state["setpoint"] = 0.0
-        dispatch_zero_actuation_to_plant()
 
     system_state["updated_at"] = time.time()
     logger.info(
@@ -198,7 +163,7 @@ def start_trial():
     if "setpoint" in payload:
         system_state["setpoint"] = float(payload["setpoint"])
     elif float(system_state["setpoint"]) <= 0.0:
-        system_state["setpoint"] = 60.0  # Default to aerodynamic sweet spot
+        system_state["setpoint"] = 65.0
 
     system_state["updated_at"] = time.time()
     logger.info(
@@ -218,16 +183,13 @@ def start_trial():
 @app.route("/api/stop", methods=["POST"])
 def stop_trial():
     """
-    Safely halts active control loop, zeroes setpoint, and forces actuator de-energization.
+    Safely halts active control loop and zeroes setpoint in state engine.
     """
     system_state["is_running"] = False
     system_state["setpoint"] = 0.0
     system_state["updated_at"] = time.time()
 
-    # Actively command zero duty to hardware
-    dispatch_zero_actuation_to_plant()
-
-    logger.info("C2 Stop invoked: Controller loop disengaged and fan de-energized.")
+    logger.info("C2 Stop invoked: Controller loop disengaged and setpoint zeroed.")
     return jsonify({"status": "stopped", "actuator": 0.0, "setpoint": 0.0}), 200
 
 
@@ -252,12 +214,10 @@ def main():
     args = parse_args()
     system_state["ui_enabled"] = args.enable_ui
     logger.info(
-        "C2 Server active on http://%s:%d (UI: %s) | Plant Target: %s:%d",
+        "C2 Server active on http://%s:%d (UI: %s)",
         args.host,
         args.port,
         "ENABLED" if args.enable_ui else "HEADLESS",
-        PLANT_HOST,
-        PLANT_PORT,
     )
     app.run(host=args.host, port=args.port, debug=False)
 
