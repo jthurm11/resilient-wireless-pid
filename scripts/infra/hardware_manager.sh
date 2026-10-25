@@ -606,12 +606,13 @@ action_sync() {
   msg_info "Pulling latest changes for ${TARGET_BRANCH}"
   cd "$REPO_ROOT" || msg_error "Repository workspace not found at ${REPO_ROOT}"
   git fetch origin >/dev/null 2>&1
-  git checkout "$TARGET_BRANCH" >/dev/null 2>&1
-  git pull origin "$TARGET_BRANCH" >/dev/null 2>&1
+  git checkout "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Checkout failed: $TARGET_BRANCH"
+  git pull origin "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Pull failed: $TARGET_BRANCH"
   msg_ok "Repository synchronized"
 
   msg_info "Updating Python environment"
   source .venv/bin/activate
+  find . '(' -name "*.pyc" -o -name "__pycache__" ')' -delete 2>&1 || msg_warn "Failed to clear pycache"
   pip install -e . --no-deps >/dev/null 2>&1
   msg_ok "Virtual environment updated"
 
