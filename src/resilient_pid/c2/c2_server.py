@@ -41,9 +41,9 @@ system_state: SystemState = {
     "is_running": False,
     "trial_id": f"trial_{int(time.time())}",
     "algorithm": "discrete",  # discrete | smith | resilient
-    "setpoint": 0.0,          # Initialized to 0.0 for safety
+    "setpoint": 0.0,  # Initialized to 0.0 for safety
     "active_profile": "nominal",
-    "ui_enabled": False,      # Dynamic UI toggle
+    "ui_enabled": False,  # Dynamic UI toggle
     "updated_at": time.time(),
 }
 

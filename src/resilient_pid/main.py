@@ -342,7 +342,9 @@ class ControllerRuntime:
                 if not active_is_running:
                     # FALLING EDGE DETECTOR: Just transitioned from running to stopped
                     if was_running:
-                        logger.info(">>> ACTIVE CONTROL STOPPED: De-energizing plant blower (u=0.0%) <<<")
+                        logger.info(
+                            ">>> ACTIVE CONTROL STOPPED: De-energizing plant blower (u=0.0%) <<<"
+                        )
                         for ctrl in self.controllers.values():
                             ctrl.reset()
                         self.seq_num = 0
@@ -351,16 +353,16 @@ class ControllerRuntime:
 
                         # Dispatch zero-duty datagrams to physical plant over the active socket
                         if self._socket is not None and not self.args.mock_loop:
-                            stop_pkt = json.dumps({
-                                "seq": 0,
-                                "u": 0.0,
-                                "t_send": time.perf_counter()
-                            }).encode("utf-8")
+                            stop_pkt = json.dumps(
+                                {"seq": 0, "u": 0.0, "t_send": time.perf_counter()}
+                            ).encode("utf-8")
                             for _ in range(3):
                                 try:
                                     self._socket.sendto(stop_pkt, self.plant_addr)
                                 except OSError as err:
-                                    logger.error("Failed to transmit stop frame: %s", err)
+                                    logger.error(
+                                        "Failed to transmit stop frame: %s", err
+                                    )
                                 time.sleep(0.005)
 
                         self._drain_socket_buffer()
