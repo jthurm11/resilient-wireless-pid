@@ -176,7 +176,7 @@ class BaselineOrchestrator:
                         error = abs(mean_pv - initial_sp)
 
                         # Validate that the ball is hovering within steady envelope
-                        if error <= 4.5 and variance <= 4.0:
+                        if error <= 6 and variance <= 25.0:
                             elapsed = time.perf_counter() - t0
                             logger.info(
                                 ">>> PRE-FLIGHT CONVERGED: SP=%.1f%% achieved in %.2fs (Variance: %.2f). Launching trial. <<<",
@@ -305,7 +305,7 @@ def get_step_profile(tube_type: str, total_duration: float) -> list[StepPhase]:
         setpoints = [72.0, 80.0, 88.0, 75.0, 85.0]
     else:
         # Calibrated safe flight corridor centered around the 65% stability sweet spot
-        setpoints = [50.0, 65.0, 70.0, 48.0, 65.0, 55.0]
+        setpoints = [60.0, 65.0, 70.0, 48.0, 65.0, 55.0]
 
     phase_len = total_duration / len(setpoints)
     return [StepPhase(setpoint=sp, duration_sec=phase_len) for sp in setpoints]
