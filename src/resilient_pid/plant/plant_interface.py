@@ -464,8 +464,15 @@ class HardwarePlant(BasePlant):
                     self._current_pv = float(np.clip(pv_norm, 0.0, 100.0))
 
                 # Echo Dropout / Reflection Skew
+<<<<<<< HEAD
                 else:
                     self._miss_count += 1
+=======
+                #   Enforce physical velocity constraint: hold previous PV instead of forcing 0.0%.
+                else:
+                    self._miss_count += 1
+                    # Only reset to floor if fan is truly idle (< 5% PWM) for sustained duration
+>>>>>>> f5baf43 (Flight test (#15))
                     if self._last_u_cmd < 5.0 and self._miss_count > 10:
                         self._current_pv = 0.0
 
