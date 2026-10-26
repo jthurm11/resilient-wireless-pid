@@ -466,14 +466,11 @@ class ControllerRuntime:
 
                         if rx_frame is not None:
                             raw_pv = float(rx_frame["pv"])
-<<<<<<< HEAD
                             raw_dist = rx_frame.get("dist_cm")
                             height_val = rx_frame.get("height_cm")
                             tach_val = float(rx_frame.get("tach_rpm", -1.0))
                             tach_vld = bool(rx_frame.get("tach_valid", False))
 
-=======
->>>>>>> f5baf43 (Flight test (#15))
                             # Reject transient zero-drops during active flight
                             if raw_pv == 0.0 and self.last_known_pv >= 40.0:
                                 is_loss = True

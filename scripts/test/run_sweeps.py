@@ -3,10 +3,7 @@
 scripts/test/run_sweeps.py
 Automated network impairment parameter sweep orchestrator.
 Optimized for unattended execution across dead-time, jitter, and burst loss distributions.
-<<<<<<< HEAD
 Standardized for complete physical/network state export and deterministic naming.
-=======
->>>>>>> f5baf43 (Flight test (#15))
 """
 
 import argparse
@@ -121,13 +118,7 @@ class SweepOrchestrator:
             return False
 
     def stop_c2_actuation(self) -> None:
-<<<<<<< HEAD
         """Signals C2 REST API to halt and commands SP=0.0 to actively de-energize the fan driver."""
-=======
-        """
-        Signals C2 REST API to halt and commands SP=0.0 to actively de-energize the fan driver.
-        """
->>>>>>> f5baf43 (Flight test (#15))
         try:
             requests.post(
                 f"{self.c2_url}/api/control",
@@ -265,10 +256,7 @@ class SweepOrchestrator:
         trials: list[TrialConfig] = []
         batch_ts = time.strftime("%Y%m%d_%H%M%S")
         target_sp = 60.0  # Calibrated aerodynamic sweet spot for acrylic column
-<<<<<<< HEAD
         tube = "acrylic"
-=======
->>>>>>> f5baf43 (Flight test (#15))
 
         # Vector 1: Dead-time sweeps (discrete vs smith)
         for rtt_ms in range(10, 110, 10):

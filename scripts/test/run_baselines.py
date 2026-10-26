@@ -389,7 +389,9 @@ def main() -> None:
         for algo in target_algos:
             # Deterministic, descriptive naming convention
             trial_id = f"baseline_{args.tube_type}_{algo}_SP50-70_{session_ts}"
-            export_filename = f"baseline_{args.tube_type}_{algo}_SP50-70_{session_ts}.csv"
+            export_filename = (
+                f"baseline_{args.tube_type}_{algo}_SP50-70_{session_ts}.csv"
+            )
 
             config = BaselineTrialConfig(
                 trial_id=trial_id,

@@ -147,9 +147,9 @@ def postprocess_trial_dataframe(
             ).fillna(50.0)
         else:
             df["t_rel_s"] = (df["_time"] - df["_time"].iloc[0]).dt.total_seconds()
-            df["dt_exec_ms"] = (
-                df["_time"].diff().dt.total_seconds() * 1000.0
-            ).fillna(50.0)
+            df["dt_exec_ms"] = (df["_time"].diff().dt.total_seconds() * 1000.0).fillna(
+                50.0
+            )
 
     # Enforce canonical mechanical plant geometry
     resolved_tube = resolve_tube_type(df, default_tube)

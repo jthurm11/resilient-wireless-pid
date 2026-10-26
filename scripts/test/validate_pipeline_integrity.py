@@ -40,7 +40,6 @@ import glob
 import os
 import subprocess
 import sys
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -212,7 +211,9 @@ def check_qdisc_hygiene(interface: str = "wlan0") -> bool:
                 f"Residual netem qdisc rules found active on {interface}: {res.stdout.strip()}"
             )
             return False
-        log_pass(f"Interface {interface} root qdisc is clean (no residual netem rules).")
+        log_pass(
+            f"Interface {interface} root qdisc is clean (no residual netem rules)."
+        )
         return True
     except FileNotFoundError:
         log_info(
