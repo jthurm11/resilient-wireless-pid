@@ -24,6 +24,7 @@ CLEAN_ONLY=0
 AUTO_STAGE=0
 SHOW_HEADER=true
 TEST_TARGET=""
+TEST_KEYWORD=""
 
 # -----------------------------------------------------------------------------
 # Diagnostic Logging Primitives
@@ -56,14 +57,18 @@ print_usage() {
   printf "  %s [OPTIONS]\n\n" "${0##*/}"
   printf "${BOLD}DESCRIPTION:${CL}\n"
   printf "  Enforces deterministic import sorting, AST code formatting (Ruff),\n"
-  printf "  static type verification (Mypy), and mathematical unit test suites (Pytest).\n\n"
+  printf "  static type verification (Mypy), and mathematical unit test suites (Pytest).\n"
+  printf "  Passing '-t' or '-k' enters Targeted Mode, skipping lint/format/type audits.\n\n"
   printf "${BOLD}OPTIONS:${CL}\n"
-  printf "  -s, --skip-tests       Skip test suite execution (cleanup, formatting, and linting only)\n"
-  printf "  -c, --clean-only       Purge cache directories and Python bytecode, then exit\n"
-  printf "  -a, --auto-stage       Re-stage modified files in git index after ruff formatting\n"
-  printf "  -t, --target <path>    Run tests against a specific test file or directory\n"
-  printf "  -q, --no-header        Suppress ASCII banner display\n"
-  printf "  -h, --help             Display this help dialog and exit\n"
+  printf "  -s, --skip-tests             Skip test suite execution (cleanup, formatting, and linting only)\n"
+  printf "  -c, --clean-only             Purge cache directories and Python bytecode, then exit\n"
+  printf "  -a, --auto-stage             Re-stage modified files in git index after ruff formatting\n"
+  printf "  -t, --target <path|nodeid>   Run tests against a specific file, directory, or Node ID\n"
+  printf "                               (e.g., 'tests/test_pid_math.py::TestClass::test_func')\n"
+  printf "  -k, --keyword <expression>   Pytest keyword filter: run only tests matching substring\n"
+  printf "                               (e.g., 'zero_delay' or 'smith and not dropout')\n"
+  printf "  -q, --no-header              Suppress ASCII banner display\n"
+  printf "  -h, --help                   Display this help dialog and exit\n"
 }
 
 # -----------------------------------------------------------------------------
@@ -97,7 +102,15 @@ parse_cli_arguments() {
           TEST_TARGET="$2"
           shift 2
         else
-          msg_error "Option --target requires a non-empty path argument."
+          msg_error "Option --target requires a non-empty path or Node ID argument."
+        fi
+        ;;
+      -k|--keyword)
+        if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+          TEST_KEYWORD="$2"
+          shift 2
+        else
+          msg_error "Option --keyword requires a non-empty string expression."
         fi
         ;;
       *)
@@ -206,20 +219,30 @@ run_test_suites() {
     return 0
   fi
 
-  msg_info "Executing automated unit test suites"
+  local target_path="${TEST_TARGET:-tests/}"
+  local pytest_args=("-v" "--tb=short")
 
-  local target_path="tests/"
-  if [[ -n "${TEST_TARGET}" ]]; then
-    target_path="${TEST_TARGET}"
+  if [[ -n "${TEST_KEYWORD}" ]]; then
+    pytest_args+=("-k" "${TEST_KEYWORD}")
   fi
 
+  msg_info "Executing test execution vector -> [Target: ${target_path}${TEST_KEYWORD:+ | Filter: -k \"$TEST_KEYWORD\"}]"
+
   if command -v pytest >/dev/null 2>&1; then
-    if ! pytest "${target_path}" -v --tb=short; then
+    if ! pytest "${target_path}" "${pytest_args[@]}"; then
       msg_error "Pytest execution failed."
     fi
   else
     msg_warn "Pytest binary not detected in PATH. Falling back to python3 -m unittest"
-    if ! python3 -m unittest discover -s tests -p "test_*.py" -v; then
+    if [[ -n "${TEST_KEYWORD}" ]]; then
+      msg_error "Keyword filtering (-k) requires pytest. Install pytest or run full module via unittest."
+    fi
+    # Format unittest target path (e.g. tests/test_pid_math.py -> tests.test_pid_math)
+    local unittest_target
+    unittest_target="${target_path%.py}"
+    unittest_target="${unittest_target//\//.}"
+    unittest_target="${unittest_target#tests.}"
+    if ! python3 -m unittest discover -s tests -p "${unittest_target}*.py" -v; then
       msg_error "Unittest runner discovered assertion failures."
     fi
   fi
@@ -241,6 +264,16 @@ main() {
     exit 0
   fi
 
+  # Targeted Test Bypass: If testing a specific target or keyword, skip linting and formatting gates
+  if [[ -n "${TEST_TARGET}" || -n "${TEST_KEYWORD}" ]]; then
+    msg_warn "Targeted test execution requested. Bypassing Ruff formatters, linters, and Mypy audits."
+    purge_transient_caches
+    run_test_suites
+    printf "\n${GN}${BOLD}✔ Targeted test validation complete.${CL}\n\n"
+    exit 0
+  fi
+
+  # Nominal Pre-Commit Quality Gate Pipeline
   verify_toolchain
   purge_transient_caches
   run_ruff_lint_and_fix
