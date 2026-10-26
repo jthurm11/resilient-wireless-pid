@@ -516,8 +516,11 @@ class HardwarePlant(BasePlant):
             logger.error("Failed to release GPIO lines: %s", e)
 
 
-def ensure_service_stopped(service_name: str = "dcs-plant.service") -> None:
-    """Verifies that the background systemd daemon is deactivated."""
+def ensure_service_stopped(service_name: str = "dcs-plant.service") -> bool:
+    """
+    Verifies background systemd daemon status and stops it to prevent hardware/socket contention.
+    Returns True if the service was actively running prior to deactivation; False otherwise.
+    """
     try:
         status_res = subprocess.run(
             ["systemctl", "is-active", "--quiet", service_name],
@@ -531,8 +534,40 @@ def ensure_service_stopped(service_name: str = "dcs-plant.service") -> None:
             subprocess.run(["sudo", "systemctl", "stop", service_name], check=True)
             time.sleep(1.0)
             logger.info("%s stopped successfully.", service_name)
+            return True
     except Exception as e:
         logger.error("Failed to evaluate/stop %s: %s", service_name, e)
+    return False
+
+
+def restore_service(
+    was_active: bool,
+    force_restart: bool = False,
+    suppress_restart: bool = False,
+    service_name: str = "dcs-plant.service",
+) -> None:
+    """
+    Restores or initializes background systemd service according to execution policies:
+      - If suppress_restart is True, no action is taken.
+      - If force_restart is True, the service is started regardless of initial state.
+      - If was_active is True and not suppressed, the service is restored.
+    """
+    if suppress_restart:
+        logger.info("Service restart suppressed via --no-service-restart.")
+        return
+
+    should_start = force_restart or was_active
+    if not should_start:
+        logger.debug("Service %s was inactive prior to test run; skipping restart.", service_name)
+        return
+
+    logger.info("Initiating restart of background daemon: %s...", service_name)
+    try:
+        subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
+        time.sleep(1.0)
+        logger.info("%s successfully restarted and operational.", service_name)
+    except Exception as e:
+        logger.error("Failed to start %s: %s", service_name, e)
 
 
 def run_op_test(
@@ -816,6 +851,20 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="Number of iterations for --cycle-test (default: 5).",
     )
+    # Service lifecycle management flags
+    service_group = parser.add_mutually_exclusive_group()
+    service_group.add_argument(
+        "--no-service-restart",
+        action="store_true",
+        dest="no_service_restart",
+        help="Do not restart dcs-plant.service after test completion, even if active beforehand.",
+    )
+    service_group.add_argument(
+        "--service-restart",
+        action="store_true",
+        dest="service_restart",
+        help="Unconditionally start/restart dcs-plant.service after test completion.",
+    )
 
     return parser.parse_args()
 
@@ -824,8 +873,9 @@ def main() -> None:
     args = parse_args()
 
     # Pre-execution service contention handling
+    service_was_active = False
     if args.op_test or args.cycle_test:
-        ensure_service_stopped("dcs-plant.service")
+        service_was_active = ensure_service_stopped("dcs-plant.service")
 
     # Resolve geometric column length based on tube type or explicit override
     if args.tube_length is not None:
@@ -838,9 +888,7 @@ def main() -> None:
     plant: BasePlant
     if args.mode == "hardware":
         if not HARDWARE_AVAILABLE:
-            logger.error(
-                "Physical drivers unavailable. Falling back to simulated twin."
-            )
+            logger.error("Physical drivers unavailable. Falling back to simulated twin.")
             plant = SimulatedPlant(
                 tube_length_m=effective_tube_length_cm / 100.0,
                 tube_type=args.tube_type,
@@ -862,6 +910,7 @@ def main() -> None:
         if not isinstance(plant, HardwarePlant):
             logger.fatal("--op-test requires physical hardware execution.")
             sys.exit(1)
+        test_success = False
         try:
             run_op_test(
                 plant,
@@ -869,18 +918,33 @@ def main() -> None:
                 port=args.port,
                 ignore_tach=args.ignore_tach,
             )
+            test_success = True
         finally:
             plant.cleanup()
+            if test_success:
+                restore_service(
+                    was_active=service_was_active,
+                    force_restart=args.service_restart,
+                    suppress_restart=args.no_service_restart,
+                )
         return
 
     if args.cycle_test:
         if not isinstance(plant, HardwarePlant):
             logger.fatal("--cycle-test requires physical hardware execution.")
             sys.exit(1)
+        test_success = False
         try:
             run_cycle_test(plant, cycles=args.cycles)
+            test_success = True
         finally:
             plant.cleanup()
+            if test_success:
+                restore_service(
+                    was_active=service_was_active,
+                    force_restart=args.service_restart,
+                    suppress_restart=args.no_service_restart,
+                )
         return
 
     # Nominal Daemon Runtime Loop
