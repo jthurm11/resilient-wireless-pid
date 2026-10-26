@@ -147,6 +147,10 @@ sudo tc qdisc del dev $IFACE root
 
 ```
 
+### Automated Empirical Evaluations & Post-Processing  
+
+For instructions on executing dynamic baselines, automated parameter sweeps across delay/jitter/loss vectors, emergency fail-safe procedures, and data post-processing, refer to the [Testbed Operations & Replication Guide](docs/development/testbed_operations_guide.md).  
+
 ---
 
 ## Attribution & Prior Art
