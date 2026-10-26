@@ -3,6 +3,7 @@
 scripts/test/run_baselines.py
 Empirical Dynamic Baseline Pipeline with Automated Pre-Flight Runway.
 Executes unperturbed step-response sequences across target control algorithms.
+Standardized for complete physical/network state export and deterministic naming.
 """
 
 import argparse
@@ -12,6 +13,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 import requests
 from influxdb_client import InfluxDBClient
@@ -129,7 +131,7 @@ class BaselineOrchestrator:
             pass
 
     def run_preflight_runway(
-        self, initial_sp: float, max_runway_sec: float = 30.0
+        self, initial_sp: float, max_runway_sec: float = 35.0
     ) -> None:
         """
         Dynamically monitors convergence to initial setpoint before commencing formal trial.
@@ -176,7 +178,7 @@ class BaselineOrchestrator:
                         error = abs(mean_pv - initial_sp)
 
                         # Validate that the ball is hovering within steady envelope
-                        if error <= 6 and variance <= 25.0:
+                        if error <= 4.5 and variance <= 4.0:
                             elapsed = time.perf_counter() - t0
                             logger.info(
                                 ">>> PRE-FLIGHT CONVERGED: SP=%.1f%% achieved in %.2fs (Variance: %.2f). Launching trial. <<<",
@@ -196,7 +198,7 @@ class BaselineOrchestrator:
         )
 
     def export_trial_csv(self, config: BaselineTrialConfig) -> None:
-        """Queries InfluxDB for trial metrics and exports a populated CSV snapshot."""
+        """Queries InfluxDB for trial metrics and exports a populated CSV snapshot with standardized schema."""
         query_api = self.influx_client.query_api()
         flux_query = f"""
         from(bucket: "{self.influx_bucket}")
@@ -222,23 +224,32 @@ class BaselineOrchestrator:
                 df["tube_length_cm"] = config.tube_length_cm
                 df["tube_inner_dia_mm"] = config.tube_inner_dia_mm
 
-                preferred_cols = [
+                # Standardized schema enforcing complete physical and network states
+                canonical_cols = [
                     "_time",
                     "trial_id",
+                    "algorithm",
                     "tube_type",
                     "tube_length_cm",
                     "tube_inner_dia_mm",
-                    "algorithm",
                     "setpoint",
                     "process_variable",
                     "control_signal",
                     "error",
+                    "raw_distance_cm",
+                    "height_cm",
+                    "fan_tach_rpm",
+                    "tach_valid",
                     "rtt_ms",
+                    "dt_exec_ms",
                     "is_loss",
                 ]
-                ordered = [c for c in preferred_cols if c in df.columns]
-                extra = [c for c in df.columns if c not in preferred_cols]
-                export_df = df[ordered + extra]
+                for col in canonical_cols:
+                    if col not in df.columns:
+                        df[col] = np.nan
+
+                extra_cols = [c for c in df.columns if c not in canonical_cols]
+                export_df = df[canonical_cols + extra_cols]
                 export_df.to_csv(target_path, index=False)
                 logger.info(
                     "Exported %d samples for trial '%s' to %s",
@@ -305,7 +316,7 @@ def get_step_profile(tube_type: str, total_duration: float) -> list[StepPhase]:
         setpoints = [72.0, 80.0, 88.0, 75.0, 85.0]
     else:
         # Calibrated safe flight corridor centered around the 65% stability sweet spot
-        setpoints = [60.0, 65.0, 70.0, 48.0, 65.0, 55.0]
+        setpoints = [50.0, 65.0, 70.0, 48.0, 65.0, 55.0]
 
     phase_len = total_duration / len(setpoints)
     return [StepPhase(setpoint=sp, duration_sec=phase_len) for sp in setpoints]
@@ -376,10 +387,9 @@ def main() -> None:
 
     try:
         for algo in target_algos:
-            trial_id = f"dynamic_baseline_{args.tube_type}_{algo}_{session_ts}"
-            export_filename = (
-                f"dynamic_baseline_{args.tube_type}_{algo}_{session_ts}.csv"
-            )
+            # Deterministic, descriptive naming convention
+            trial_id = f"baseline_{args.tube_type}_{algo}_SP50-70_{session_ts}"
+            export_filename = f"baseline_{args.tube_type}_{algo}_SP50-70_{session_ts}.csv"
 
             config = BaselineTrialConfig(
                 trial_id=trial_id,

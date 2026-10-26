@@ -5,8 +5,8 @@ Unified Plant Runtime Daemon & Diagnostic Suite for Resilient Wireless PID DCS.
 Provides an interchangeable interface between physical hardware (PWM/I2C/GPIO)
 and a continuous aerodynamic software twin (RK4 integration).
 
-Uses an asynchronous worker thread for HC-SR04 ping acquisition to decouple
-acoustic flight-time latency from real-time UDP telemetry response deadlines.
+Uses asynchronous worker threads for HC-SR04 ping acquisition and EMC2101 TACH polling
+to decouple physical sensor flight time and I2C SMBus latency from real-time UDP deadlines.
 Implements POSIX signal handling (SIGTERM/SIGINT) to guarantee safe de-energization
 of the EMC2101 fan actuator and deterministic deallocation of GPIO lines.
 
@@ -72,9 +72,9 @@ class BasePlant(ABC):
         pass
 
     @abstractmethod
-    def get_telemetry_snapshot(self) -> tuple[float, float, int]:
+    def get_telemetry_snapshot(self) -> tuple[float, float, int, float, bool]:
         """
-        Atomically returns (current_pv_percent, raw_distance_cm, miss_count).
+        Atomically returns (current_pv_percent, raw_distance_cm, miss_count, tach_rpm, tach_valid).
         """
         pass
 
@@ -121,6 +121,7 @@ class SimulatedPlant(BasePlant):
         self.state = np.array([0.0, 0.0, 0.0], dtype=np.float64)
         self._current_pv: float = 0.0
         self._last_distance_cm: float = self.L_tube * 100.0
+        self._sim_rpm: float = 0.0
 
         # Mechanical boundaries
         self.cor_bottom = 0.20
@@ -173,6 +174,7 @@ class SimulatedPlant(BasePlant):
 
     def step(self, u_t: float) -> float:
         u_clamped = float(np.clip(u_t, 0.0, 100.0))
+        self._sim_rpm = (u_clamped / 100.0) * 3200.0
 
         # Dynamic vortex shedding perturbation
         turbulence_sigma = 0.25 * (self.state[0] / self.v_air_max)
@@ -211,8 +213,8 @@ class SimulatedPlant(BasePlant):
         self._last_distance_cm = max(0.0, (self.L_tube - self.state[1]) * 100.0)
         return self._current_pv
 
-    def get_telemetry_snapshot(self) -> tuple[float, float, int]:
-        return self._current_pv, self._last_distance_cm, 0
+    def get_telemetry_snapshot(self) -> tuple[float, float, int, float, bool]:
+        return self._current_pv, self._last_distance_cm, 0, self._sim_rpm, True
 
     def cleanup(self) -> None:
         logger.info("Cleaning up simulated plant state.")
@@ -223,6 +225,7 @@ class HardwarePlant(BasePlant):
     Physical hardware interface running on bare-metal Raspberry Pi.
     Actuates a 12V 4-wire fan via EMC2101 (I2C 0x4C) and samples
     ball elevation via an asynchronous HC-SR04 ultrasonic worker.
+    Decouples SMBus TACH reads into a non-blocking background thread.
     """
 
     # EMC2101 Register Map
@@ -242,7 +245,7 @@ class HardwarePlant(BasePlant):
         emc2101_addr: int = 0x4C,
         trig_pin: int = 23,
         echo_pin: int = 24,
-        tube_length_cm: float = 45.72,
+        tube_length_cm: float = 45.085,
         tube_type: str = "acrylic",
         sensor_at_top: bool = True,
         enable_sensor_thread: bool = True,
@@ -274,6 +277,10 @@ class HardwarePlant(BasePlant):
         self._running: bool = True
         self._last_u_cmd: float = 0.0
 
+        # Asynchronous TACH state
+        self._tach_rpm: float = -1.0
+        self._tach_valid: bool = False
+
         # Initialize EMC2101 over SMBus/I2C
         self.bus = smbus2.SMBus(i2c_bus)
         self._init_emc2101()
@@ -291,6 +298,12 @@ class HardwarePlant(BasePlant):
                 target=self._sensor_worker, name="HCSR04-Poller", daemon=True
             )
             self.worker_thread.start()
+
+        # Launch Asynchronous Non-Blocking TACH Acquisition Worker
+        self.tach_worker_thread = threading.Thread(
+            target=self._tach_worker, name="EMC2101-TACH-Poller", daemon=True
+        )
+        self.tach_worker_thread.start()
 
         logger.info(
             "HardwarePlant online: Column: %s (L=%.2f cm) | "
@@ -329,23 +342,48 @@ class HardwarePlant(BasePlant):
         except Exception as e:
             logger.warning("EMC2101 I2C write failed: %s", e)
 
-    def read_tach_rpm(self) -> float:
-        """Decodes raw 16-bit TACH registers to revolutions-per-minute."""
-        try:
-            lsb = self.bus.read_byte_data(self.emc_addr, self.REG_TACH_LSB)
-            msb = self.bus.read_byte_data(self.emc_addr, self.REG_TACH_MSB)
-            count = (msb << 8) | lsb
-            if count in (0x0000, 0xFFFF):
-                return 0.0
-            return float((90000 * 60) / count)
-        except Exception as e:
-            logger.debug("Failed to read TACH from EMC2101: %s", e)
-            return 0.0
+    def _tach_worker(self) -> None:
+        """Background thread polling EMC2101 TACH registers at 10 Hz without blocking UDP deadlines."""
+        while self._running:
+            try:
+                lsb = self.bus.read_byte_data(self.emc_addr, self.REG_TACH_LSB)
+                msb = self.bus.read_byte_data(self.emc_addr, self.REG_TACH_MSB)
+                count = (msb << 8) | lsb
+                if count in (0x0000, 0xFFFF):
+                    if self._last_u_cmd < 5.0:
+                        rpm = 0.0
+                        valid = True
+                    else:
+                        rpm = -1.0
+                        valid = False
+                else:
+                    rpm = float((90000 * 60) / count)
+                    valid = True
+            except Exception:
+                rpm = -1.0
+                valid = False
 
-    def get_telemetry_snapshot(self) -> tuple[float, float, int]:
-        """Atomically retrieves the latest sensor process variable, distance, and miss counter."""
+            with self._lock:
+                self._tach_rpm = rpm
+                self._tach_valid = valid
+
+            time.sleep(0.1)
+
+    def read_tach_rpm(self) -> float:
+        """Returns the most recent non-blocking TACH RPM reading."""
         with self._lock:
-            return self._current_pv, self._last_distance_cm, self._miss_count
+            return self._tach_rpm if self._tach_valid else 0.0
+
+    def get_telemetry_snapshot(self) -> tuple[float, float, int, float, bool]:
+        """Atomically retrieves the latest sensor process variable, distance, miss counter, and TACH state."""
+        with self._lock:
+            return (
+                self._current_pv,
+                self._last_distance_cm,
+                self._miss_count,
+                self._tach_rpm,
+                self._tach_valid,
+            )
 
     def _acquire_distance_cm(self) -> float:
         """
@@ -394,9 +432,6 @@ class HardwarePlant(BasePlant):
 
             with self._lock:
                 # Physical Blind-Zone / Transducer Ringing Occlusion
-                #   Transducer blind band is < 3.8 cm (PV >= 91%).
-                #   If ping times out while sphere was recently at high elevation,
-                #   the sphere is physically occluding the transducer face.
                 if (0.0 <= d < 3.8) or (d < 0.0 and self._current_pv >= 70.0):
                     self._miss_count = 0
                     self._last_distance_cm = self.d_min_cm
@@ -422,10 +457,8 @@ class HardwarePlant(BasePlant):
                     self._current_pv = float(np.clip(pv_norm, 0.0, 100.0))
 
                 # Echo Dropout / Reflection Skew
-                #   Enforce physical velocity constraint: hold previous PV instead of forcing 0.0%.
                 else:
                     self._miss_count += 1
-                    # Only reset to floor if fan is truly idle (< 5% PWM) for sustained duration
                     if self._last_u_cmd < 5.0 and self._miss_count > 10:
                         self._current_pv = 0.0
 
@@ -433,7 +466,7 @@ class HardwarePlant(BasePlant):
 
     def step(self, u_t: float) -> float:
         self.set_fan_pwm(u_t)
-        pv, dist, misses = self.get_telemetry_snapshot()
+        pv, dist, misses, _, _ = self.get_telemetry_snapshot()
 
         if logger.isEnabledFor(logging.DEBUG) or int(time.time() * 2) % 10 == 0:
             logger.info(
@@ -453,6 +486,8 @@ class HardwarePlant(BasePlant):
         self._running = False
         if hasattr(self, "worker_thread") and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=0.3)
+        if hasattr(self, "tach_worker_thread") and self.tach_worker_thread.is_alive():
+            self.tach_worker_thread.join(timeout=0.3)
 
         try:
             if hasattr(self, "bus") and self.bus is not None:
@@ -511,7 +546,7 @@ def run_op_test(
     pre_test_samples: list[float] = []
     logger.info("Acquiring 10 resting distance samples from HC-SR04...")
     for _ in range(10):
-        _, dist, misses = plant.get_telemetry_snapshot()
+        _, dist, misses, _, _ = plant.get_telemetry_snapshot()
         if dist > 2.0:
             pre_test_samples.append(dist)
         time.sleep(0.08)
@@ -568,7 +603,7 @@ def run_op_test(
 
         for _ in range(6):
             tach_samples.append(plant.read_tach_rpm())
-            pv, dist, _ = plant.get_telemetry_snapshot()
+            pv, dist, _, _, _ = plant.get_telemetry_snapshot()
             pv_samples.append(pv)
             dist_samples.append(dist)
             time.sleep(0.2)
@@ -711,7 +746,7 @@ def run_cycle_test(
             pv = plant.step(u)
             time.sleep(step_interval)
             rpm = plant.read_tach_rpm()
-            _, dist, _ = plant.get_telemetry_snapshot()
+            _, dist, _, _, _ = plant.get_telemetry_snapshot()
             tach_str = f"{rpm:6.1f} RPM" if rpm > 0.0 else "N/A"
             logger.info(
                 "Command: %5.1f%% | PV: %5.1f%% | Dist: %5.1f cm | TACH: %s",
@@ -890,19 +925,21 @@ def main() -> None:
             t_send = pkt.get("t_send")
 
             pv = plant.step(u_t)
-            _, raw_dist_cm, _ = plant.get_telemetry_snapshot()
+            _, raw_dist_cm, _, tach_rpm, tach_valid = plant.get_telemetry_snapshot()
             height_cm = (
                 effective_tube_length_cm - raw_dist_cm
                 if args.sensor_at_top
                 else raw_dist_cm
             )
 
-            # Augmented UDP payload with distance and physical height metrics
+            # Augmented UDP payload with distance, height, and TACH metrics
             resp = {
                 "seq": seq,
                 "pv": round(pv, 2),
                 "dist_cm": round(raw_dist_cm, 2),
                 "height_cm": round(max(0.0, height_cm), 2),
+                "tach_rpm": round(tach_rpm, 1),
+                "tach_valid": bool(tach_valid),
                 "t_send": t_send,
                 "t_echo": t_recv,
             }
