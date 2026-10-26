@@ -3,6 +3,7 @@
 scripts/test/run_sweeps.py
 Automated network impairment parameter sweep orchestrator.
 Optimized for unattended execution across dead-time, jitter, and burst loss distributions.
+Standardized for complete physical/network state export and deterministic naming.
 """
 
 import argparse
@@ -12,6 +13,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 import requests
 from influxdb_client import InfluxDBClient
@@ -116,9 +118,7 @@ class SweepOrchestrator:
             return False
 
     def stop_c2_actuation(self) -> None:
-        """
-        Signals C2 REST API to halt and commands SP=0.0 to actively de-energize the fan driver.
-        """
+        """Signals C2 REST API to halt and commands SP=0.0 to actively de-energize the fan driver."""
         try:
             requests.post(
                 f"{self.c2_url}/api/control",
@@ -193,23 +193,31 @@ class SweepOrchestrator:
                 if "algorithm" in df.columns:
                     df["algorithm"] = df["algorithm"].replace({"baseline": "discrete"})
 
-                preferred_cols = [
+                canonical_cols = [
                     "_time",
                     "trial_id",
+                    "algorithm",
                     "tube_type",
                     "tube_length_cm",
                     "tube_inner_dia_mm",
-                    "algorithm",
                     "setpoint",
                     "process_variable",
                     "control_signal",
                     "error",
+                    "raw_distance_cm",
+                    "height_cm",
+                    "fan_tach_rpm",
+                    "tach_valid",
                     "rtt_ms",
+                    "dt_exec_ms",
                     "is_loss",
                 ]
-                existing_cols = [c for c in preferred_cols if c in df.columns]
-                extra_cols = [c for c in df.columns if c not in preferred_cols]
-                export_df = df[existing_cols + extra_cols]
+                for col in canonical_cols:
+                    if col not in df.columns:
+                        df[col] = np.nan
+
+                extra_cols = [c for c in df.columns if c not in canonical_cols]
+                export_df = df[canonical_cols + extra_cols]
                 export_df.to_csv(target_path, index=False)
                 logger.info("Exported %d records to %s", len(export_df), target_path)
             else:
@@ -248,12 +256,13 @@ class SweepOrchestrator:
         trials: list[TrialConfig] = []
         batch_ts = time.strftime("%Y%m%d_%H%M%S")
         target_sp = 60.0  # Calibrated aerodynamic sweet spot for acrylic column
+        tube = "acrylic"
 
         # Vector 1: Dead-time sweeps (discrete vs smith)
         for rtt_ms in range(10, 110, 10):
             for algo in ["discrete", "smith"]:
-                t_id = f"sweep_deadtime_{algo}_{rtt_ms}ms_rtt_{batch_ts}"
-                fname = f"deadtime_{algo}_{rtt_ms}ms_rtt_{batch_ts}.csv"
+                t_id = f"sweep_deadtime_{tube}_{algo}_RTT{rtt_ms}ms_{batch_ts}"
+                fname = f"sweep_deadtime_{tube}_{algo}_RTT{rtt_ms}ms_{batch_ts}.csv"
                 trials.append(
                     TrialConfig(
                         trial_id=t_id,
@@ -267,13 +276,13 @@ class SweepOrchestrator:
 
         # Vector 2: Stochastic jitter distributions (discrete, smith, resilient)
         jitter_profiles = [
-            ("gaussian", ["delay", "40ms", "15ms", "distribution", "normal"]),
-            ("pareto", ["delay", "40ms", "15ms", "distribution", "pareto"]),
+            ("gauss_40ms-j15ms", ["delay", "40ms", "15ms", "distribution", "normal"]),
+            ("pareto_40ms-j15ms", ["delay", "40ms", "15ms", "distribution", "pareto"]),
         ]
         for name, args in jitter_profiles:
             for algo in ["discrete", "smith", "resilient"]:
-                t_id = f"sweep_jitter_{name}_{algo}_{batch_ts}"
-                fname = f"trial_jitter_{name}_{algo}_{batch_ts}.csv"
+                t_id = f"sweep_jitter_{tube}_{algo}_{name}_{batch_ts}"
+                fname = f"sweep_jitter_{tube}_{algo}_{name}_{batch_ts}.csv"
                 trials.append(
                     TrialConfig(
                         trial_id=t_id,
@@ -288,8 +297,8 @@ class SweepOrchestrator:
         # Vector 3: Burst loss profiles (discrete vs resilient)
         for loss_pct in [2, 5, 10, 15, 20]:
             for algo in ["discrete", "resilient"]:
-                t_id = f"sweep_burst_loss_{loss_pct}pct_{algo}_{batch_ts}"
-                fname = f"burst_loss_{loss_pct}pct_{algo}_{batch_ts}.csv"
+                t_id = f"sweep_loss_{tube}_{algo}_burst{loss_pct}pct_{batch_ts}"
+                fname = f"sweep_loss_{tube}_{algo}_burst{loss_pct}pct_{batch_ts}.csv"
                 trials.append(
                     TrialConfig(
                         trial_id=t_id,
