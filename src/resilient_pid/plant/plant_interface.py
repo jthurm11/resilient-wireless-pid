@@ -110,23 +110,24 @@ class SimulatedPlant(BasePlant):
 
         # Physical constants
         self.rho = 1.204  # Air density at 20°C (kg/m^3)
-        self.cd = 0.47  # Sphere drag coefficient
+        self.cd = 0.62  # Calibrated drag coefficient for acrylic tube
         self.area = np.pi * (self.r**2)
 
-        # Actuator curve: 9.5 m/s max airflow gives hover at ~48-52% PWM
+        # Calibrated Actuator Dynamic Curve:
+        # Vmax = 18.2 m/s provides liftoff breakaway past PV >= 16% while centering hover at ~37% PWM
         self.tau_fan = 0.18  # Rotational electromechanical time constant (s)
-        self.v_air_max = 12.5  # Max steady-state airspeed (m/s)
+        self.v_air_max = 18.2  # Max steady-state airspeed (m/s)
 
-        # State: [v_air (m/s), y_pos (m), v_ball (m/s)]
+        # Dynamic state vector: [v_air (m/s), y_pos (m), v_ball (m/s)]
         self.state = np.array([0.0, 0.0, 0.0], dtype=np.float64)
         self._current_pv: float = 0.0
         self._last_distance_cm: float = self.L_tube * 100.0
         self._sim_rpm: float = 0.0
 
         # Mechanical boundaries
-        self.cor_bottom = 0.20
-        self.cor_top = 0.25
-        self.friction_coeff = 0.05
+        self.cor_bottom = 0.08
+        self.cor_top = 0.10
+        self.friction_coeff = 0.065  # Realistic air column boundary layer dissipation
 
         logger.info(
             "SimulatedPlant online: Column: %s (L=%.2f cm) | Solver: RK4 (dt=%.3fs) | "
@@ -146,23 +147,25 @@ class SimulatedPlant(BasePlant):
     ) -> np.ndarray:
         v_air, y, v_ball = state
 
-        # Blower lag ODE: tau * dv_air/dt = target - v_air
+        # Blower electromechanical lag ODE: tau * dv_air/dt = target - v_air
         target_v_air = ((u_clamped / 100.0) ** 1.1) * self.v_air_max
         d_v_air = (target_v_air - v_air) / self.tau_fan
 
-        # Annular exhaust pressure drop along the tube height
+        # Annular exhaust pressure drop along tube height
         gradient = 1.0 - 0.20 * (y / self.L_tube)
         net_air_speed = max(0.0, (v_air + turbulent_flow) * gradient)
 
-        # Relative fluid velocity across the sphere surface
+        # Relative fluid velocity across sphere surface
         v_rel = net_air_speed - v_ball
         f_aero = 0.5 * self.rho * self.cd * self.area * v_rel * abs(v_rel)
 
-        # Wall dissipation & gravity
+        # Wall dissipation opposing velocity
         f_wall = self.friction_coeff * v_ball
-        accel = (f_aero / self.m) - self.g - f_wall
 
-        # Mechanical floor stop constraint
+        # Vertical acceleration
+        accel = (f_aero / self.m) - self.g - (f_wall / self.m)
+
+        # Kinematic bottom stop constraint (wire mesh reaction)
         if y <= 0.0 and accel <= 0.0:
             accel = 0.0
             v_ball = 0.0
@@ -177,10 +180,10 @@ class SimulatedPlant(BasePlant):
         self._sim_rpm = (u_clamped / 100.0) * 3200.0
 
         # Dynamic vortex shedding perturbation
-        turbulence_sigma = 0.25 * (self.state[0] / self.v_air_max)
-        turbulent_flow = float(np.random.normal(0.0, max(0.01, turbulence_sigma)))
+        turbulence_sigma = 0.05 * (self.state[0] / self.v_air_max)
+        turbulent_flow = float(np.random.normal(0.0, max(0.005, turbulence_sigma)))
 
-        # Runge-Kutta 4 Numerical Integration
+        # Runge-Kutta 4 Integration
         k1 = self._dynamics(self.state, u_clamped, turbulent_flow)
         k2 = self._dynamics(self.state + 0.5 * self.dt * k1, u_clamped, turbulent_flow)
         k3 = self._dynamics(self.state + 0.5 * self.dt * k2, u_clamped, turbulent_flow)
@@ -188,28 +191,27 @@ class SimulatedPlant(BasePlant):
 
         self.state += (self.dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
-        # Enforce physical mechanical hard-stops
+        # Boundary collision constraints
         if self.state[1] <= 0.0:
             self.state[1] = 0.0
             if self.state[2] < 0.0:
                 self.state[2] = -self.state[2] * self.cor_bottom
-                if abs(self.state[2]) < 0.03:
+                if abs(self.state[2]) < 0.02:
                     self.state[2] = 0.0
 
         elif self.state[1] >= self.L_tube:
             self.state[1] = self.L_tube
             if self.state[2] > 0.0:
                 self.state[2] = -self.state[2] * self.cor_top
-                if abs(self.state[2]) < 0.03:
+                if abs(self.state[2]) < 0.02:
                     self.state[2] = 0.0
 
-        # Map to percentage [0.0, 100.0]%
+        # Percentage mapping [0.0, 100.0]%
         pv_true = (self.state[1] / self.L_tube) * 100.0
 
         # Transducer acoustic reflection noise (0.25% variance)
         sensor_noise = np.random.normal(0.0, 0.25)
         self._current_pv = float(np.clip(pv_true + sensor_noise, 0.0, 100.0))
-        # Top-mounted acoustic distance looking down to ball
         self._last_distance_cm = max(0.0, (self.L_tube - self.state[1]) * 100.0)
         return self._current_pv
 
