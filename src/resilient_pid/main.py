@@ -162,10 +162,7 @@ class ControllerRuntime:
         self.loop_config = PIDConfig(dt=self.dt)
         self.arx_params = ARXModelParams()
 
-        # Resolve expected transport dead time:
-        # In Docker / virtual testbeds, base transport latency is sub-millisecond (mean RTT < 1ms).
-        # We enforce 0.0ms nominal delay so the Smith Predictor does not introduce phantom delay steps.
-        # Under bare-metal execution, default to the calibrated physical Wi-Fi hop (~18ms).
+        # Resolve expected transport dead time
         is_virtual = self.args.mock_loop or os.getenv("DCS_ENV") in (
             "docker",
             "proxmox_lxc",
@@ -383,6 +380,10 @@ class ControllerRuntime:
             is_loss = False
             rtt_ms = None
             current_pv = self.last_known_pv
+            raw_dist = None
+            height_val = None
+            tach_val = -1.0
+            tach_vld = False
 
             # Transmit Actuation & Sample Process Feedback (Network First)
             if self.args.mock_loop:
@@ -390,6 +391,10 @@ class ControllerRuntime:
                 current_pv = mock_pv
                 self.last_known_pv = current_pv
                 rtt_ms = 0.5
+                raw_dist = 45.085 - (current_pv * 0.45085)
+                height_val = current_pv * 0.45085
+                tach_val = (self.last_u / 100.0) * 3200.0
+                tach_vld = True
             else:
                 t_tx = time.perf_counter()
                 payload = json.dumps(
@@ -461,6 +466,11 @@ class ControllerRuntime:
 
                         if rx_frame is not None:
                             raw_pv = float(rx_frame["pv"])
+                            raw_dist = rx_frame.get("dist_cm")
+                            height_val = rx_frame.get("height_cm")
+                            tach_val = float(rx_frame.get("tach_rpm", -1.0))
+                            tach_vld = bool(rx_frame.get("tach_valid", False))
+
                             # Reject transient zero-drops during active flight
                             if raw_pv == 0.0 and self.last_known_pv >= 40.0:
                                 is_loss = True
@@ -506,7 +516,7 @@ class ControllerRuntime:
             self.last_u = u_t
             error = sp - self.last_known_pv
 
-            # Stream Telemetry Metrics to InfluxDB
+            # Stream Telemetry Metrics to InfluxDB with Physical Distance and TACH
             self.telemetry.log_control_metrics(
                 trial_id=trial,
                 algorithm=active_mode,
@@ -517,6 +527,10 @@ class ControllerRuntime:
                 rtt_ms=rtt_ms,
                 dt_exec_ms=dt_exec_ms,
                 is_loss=is_loss,
+                raw_distance_cm=raw_dist,
+                height_cm=height_val,
+                fan_tach_rpm=tach_val,
+                tach_valid=tach_vld,
             )
 
             self.seq_num += 1

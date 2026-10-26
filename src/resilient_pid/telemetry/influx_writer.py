@@ -104,6 +104,8 @@ class InfluxWriter:
         is_loss: bool = False,
         raw_distance_cm: float | None = None,
         height_cm: float | None = None,
+        fan_tach_rpm: float | None = None,
+        tach_valid: bool = False,
     ) -> None:
         """Push a control telemetry data point to the background queue."""
         now_ns = time.time_ns()
@@ -120,6 +122,7 @@ class InfluxWriter:
                 "control_signal": float(control_signal),
                 "error": float(error),
                 "is_loss": 1.0 if is_loss else 0.0,
+                "tach_valid": 1.0 if tach_valid else 0.0,
             },
             "timestamp": now_ns,
         }
@@ -132,6 +135,8 @@ class InfluxWriter:
             metric_data["fields"]["raw_distance_cm"] = float(raw_distance_cm)
         if height_cm is not None:
             metric_data["fields"]["height_cm"] = float(height_cm)
+        if fan_tach_rpm is not None and tach_valid:
+            metric_data["fields"]["fan_tach_rpm"] = float(fan_tach_rpm)
 
         try:
             self._queue.put_nowait(metric_data)
