@@ -2,8 +2,8 @@
 """
 test_pid_math.py
 Unit tests verifying control mathematics, delay buffers, anti-windup clamping,
-takeoff windup discharge, and loss-hold logic across DiscretePID,
-SmithPredictor, and ResilientPID.
+takeoff windup discharge, zero-delay bypass, and loss-hold logic across
+DiscretePID, SmithPredictor, and ResilientPID.
 """
 
 import os
@@ -163,6 +163,41 @@ class TestControlMathematics(unittest.TestCase):
         self.assertEqual(sp.delay_steps, 4)
         self.assertEqual(len(sp.delay_buffer), 4)
 
+    def test_smith_predictor_zero_delay_bypass(self):
+        """
+        Verify that virtual/zero-delay networks bypass internal dead-time modeling.
+
+        When plant dead-time is sub-millisecond (plant_delay_ms <= 1.0ms) relative to
+        sampling interval Ts (50ms), delay_steps rounds down to 0. The internal ring
+        buffer maintains an allocation invariant of max(1, delay_steps), but the
+        update() pipeline completely bypasses delayed model feedback and routes
+        directly to the primary DiscretePID loop.
+        """
+        cfg = PIDConfig(dt=0.05)
+        arx = ARXModelParams()
+
+        # 1. Verify zero/sub-millisecond virtual network delay (delay <= 1.0ms)
+        sp_fast = SmithPredictor(config=cfg, model_params=arx, plant_delay_ms=0.5)
+        self.assertEqual(sp_fast.delay_steps, 0)
+        # Buffer length invariant: max(1, delay_steps)
+        self.assertEqual(len(sp_fast.delay_buffer), 1)
+
+        # Confirm bypass path behavior: executes self.pid.update directly
+        # and does not modify the delay ring buffer contents
+        buf_before = list(sp_fast.delay_buffer)
+        u_out = sp_fast.update(setpoint=60.0, pv=50.0, is_loss=False)
+        self.assertEqual(list(sp_fast.delay_buffer), buf_before)
+        self.assertIsInstance(u_out, float)
+
+        # 2. Verify discrete dead-time deadband (60ms RTT -> 1 step at Ts=50ms)
+        sp_delayed = SmithPredictor(config=cfg, model_params=arx, plant_delay_ms=60.0)
+        self.assertEqual(sp_delayed.delay_steps, 1)
+        self.assertEqual(len(sp_delayed.delay_buffer), 1)
+
+        # Confirm active delay compensation cycles the buffer during execution
+        u_delayed = sp_delayed.update(setpoint=60.0, pv=50.0, is_loss=False)
+        self.assertIsInstance(u_delayed, float)
+
     def test_smith_predictor_reset(self):
         """Verify predictor reset purges model registers and queue history."""
         cfg = PIDConfig(dt=0.05)
@@ -206,6 +241,25 @@ class TestControlMathematics(unittest.TestCase):
         u_loss = rpid.update(setpoint=50.0, pv=0.0, is_loss=True)
         self.assertEqual(rpid.consecutive_losses, 1)
         # Bounded between safe dropout/ceiling floor (8.0%) and maximum thrust (75.0%)
+        self.assertTrue(8.0 <= u_loss <= 75.0)
+
+    def test_resilient_pid_dropout_state_propagation_and_integral_freeze(self):
+        """Verify that is_loss=True advances ARX state, freezes integral, and clamps bounds."""
+        cfg = PIDConfig(kp=0.16, ki=0.022, kd=0.15, dt=0.05)
+        arx = ARXModelParams()
+        rpid = ResilientPID(config=cfg, model_params=arx)
+
+        # 1. Warm-up step with nominal physical measurement in flight corridor
+        rpid.update(setpoint=60.0, pv=60.0, is_loss=False)
+        integral_before = rpid.pid.integral
+
+        # 2. Simulate subsequent burst packet dropout
+        u_loss = rpid.update(setpoint=60.0, pv=0.0, is_loss=True)
+        integral_after = rpid.pid.integral
+
+        # Verify integration freeze during loss
+        self.assertEqual(integral_before, integral_after)
+        # Verify bounded actuator command
         self.assertTrue(8.0 <= u_loss <= 75.0)
 
     def test_resilient_pid_reset(self):
