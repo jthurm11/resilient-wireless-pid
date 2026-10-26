@@ -436,6 +436,9 @@ class HardwarePlant(BasePlant):
 
             with self._lock:
                 # Physical Blind-Zone / Transducer Ringing Occlusion
+                #   Transducer blind band is < 3.8 cm (PV >= 91%).
+                #   If ping times out while sphere was recently at high elevation,
+                #   the sphere is physically occluding the transducer face.
                 if (0.0 <= d < 3.8) or (d < 0.0 and self._current_pv >= 70.0):
                     self._miss_count = 0
                     self._last_distance_cm = self.d_min_cm

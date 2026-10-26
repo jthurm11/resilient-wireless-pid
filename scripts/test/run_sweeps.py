@@ -420,6 +420,7 @@ def main() -> None:
         logger.error("Fatal error during sweep execution: %s", e)
         orchestrator.tc.clear_rules()
         orchestrator.stop_c2_actuation()
+        orchestrator.tc.clear_rules()
         logger.info(
             "Sweep batch concluded. Actuator de-energized. Data saved in %s",
             orchestrator.data_export_dir,
