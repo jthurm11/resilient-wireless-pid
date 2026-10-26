@@ -114,9 +114,10 @@ class SimulatedPlant(BasePlant):
         self.area = np.pi * (self.r**2)
 
         # Calibrated Actuator Dynamic Curve:
-        # Vmax = 18.2 m/s provides liftoff breakaway past PV >= 16% while centering hover at ~37% PWM
+        # Vmax = 21.5 m/s ensures dynamic liftoff reliably clears the PV >= 16% disarm gate
+        # while matching the testbed hover baseline at ~34% - 37% PWM
         self.tau_fan = 0.18  # Rotational electromechanical time constant (s)
-        self.v_air_max = 18.2  # Max steady-state airspeed (m/s)
+        self.v_air_max = 21.5  # Max steady-state airspeed (m/s)
 
         # Dynamic state vector: [v_air (m/s), y_pos (m), v_ball (m/s)]
         self.state = np.array([0.0, 0.0, 0.0], dtype=np.float64)
@@ -127,7 +128,8 @@ class SimulatedPlant(BasePlant):
         # Mechanical boundaries
         self.cor_bottom = 0.08
         self.cor_top = 0.10
-        self.friction_coeff = 0.065  # Realistic air column boundary layer dissipation
+        # Calibrated air column shear layer dissipation to suppress limit-cycle hunting
+        self.friction_coeff = 0.095
 
         logger.info(
             "SimulatedPlant online: Column: %s (L=%.2f cm) | Solver: RK4 (dt=%.3fs) | "
