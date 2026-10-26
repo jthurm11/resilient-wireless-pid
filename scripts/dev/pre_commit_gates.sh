@@ -161,7 +161,7 @@ purge_transient_caches() {
 # -----------------------------------------------------------------------------
 run_ruff_lint_and_fix() {
   msg_info "Executing deterministic import sorting and linter autofixes (Ruff)"
-  if ! ruff check --fix src/ tests/; then
+  if ! ruff check --fix src/ tests/ scripts/; then
     msg_error "Ruff check reported unfixable lint errors. Correct issues identified above."
   fi
   msg_ok "Linter validation and import sorting passed"
@@ -172,7 +172,7 @@ run_ruff_lint_and_fix() {
 # -----------------------------------------------------------------------------
 run_ruff_format() {
   msg_info "Enforcing PEP 8 / 88-character formatting standard (Ruff)"
-  if ! ruff format src/ tests/; then
+  if ! ruff format src/ tests/ scripts/; then
     msg_error "Ruff code formatting engine encountered an unrecoverable parse error."
   fi
   msg_ok "AST formatting standard enforced"
