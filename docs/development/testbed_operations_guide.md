@@ -1,6 +1,6 @@
 # Distributed Control Systems (DCS) Testbed Operations & Replication Guide
 
-This guide details the procedure for executing dynamic baseline evaluations, automated network impairment sweeps, emergency fail-safe shutdowns, and data post-processing. 
+This guide details the standard procedure for executing dynamic baseline evaluations, automated network impairment sweeps, emergency fail-safe shutdowns, and data post-processing. 
 
 The primary replication target is the **Local Virtual Twin (Docker)**, which uses a continuous 4th-order Runge-Kutta aerodynamic software simulation and requires no specialized embedded hardware. Secondary deployment environments (Proxmox LXC and Bare-Metal Raspberry Pi) use identical socket interfaces, CLI semantics, and directory layouts.
 
@@ -18,6 +18,8 @@ The framework enforces identical node naming, interface semantics, and network a
 | :--- | :--- | :--- | :--- |
 | **Execution Context** | `docker exec -it dcs-ctrl-node` | `pct exec 201` or SSH | SSH (`admin@dcs-ctrl-node`) |
 | **Plant Backend** | Continuous Aerodynamic Twin | Continuous Aerodynamic Twin | Physical Column + EMC2101 + HC-SR04 |
+| **Process Isolation** | Detached POSIX Subprocess (`docker exec -d`) | Transient Systemd Unit (`systemd-run`) | Transient Systemd Unit (`systemd-run`) |
+| **Log Ingestion** | File Stream (`data_exports/test_execution.log`) | Systemd Journal (`journalctl -u`) | Systemd Journal (`journalctl -u`) |
 | **Data Synchronization** | Automatic (Local Host Bind-Mount) | Network Sync (`fetch_datasets.sh`) | Network Sync (`fetch_datasets.sh`) |
 
 ---
@@ -28,12 +30,11 @@ Ensure the testbed services are operational prior to executing trials:
 
 ```bash
 # Query C2 state engine (run from host workspace or control node shell):
+# Optionally query remote C2 target: ./scripts/c2_ctl.sh -t <NODE_IP> status
 ./scripts/c2_ctl.sh status
 
 # For physical hardware deployments only: execute actuator/sensor sanity check:
-# python3 ./src/resilient_pid/plant/plant_interface.py --op-test --ignore-tach
-# -- OR --
-# ssh -t admin@dcs-plant-node "sudo python3 /opt/resilient-wireless-pid/src/resilient_pid/plant/plant_interface.py --op-test --ignore-tach"
+# ssh -t admin@dcs-plant-node "sudo python3 /opt/resilient-wireless-pid/src/resilient_pid/plant/plant_interface.py --op-test --ignore-tach --service-restart"
 
 ```
 
@@ -43,7 +44,9 @@ Ensure the testbed services are operational prior to executing trials:
 
 All dynamic evaluations are executed from `dcs-ctrl-node` using calibrated defaults within the linear aerodynamic flight corridor ($SP \in [48\%, 70\%]$).
 
-> !NOTE:  
+To ensure unattended test runs persist across SSH network disconnections and terminal drops without process multiplexer fragility, executions use **isolated systemd transient units** (Proxmox/Bare-Metal) or **detached background processes** (Docker).
+
+> [!NOTE]
 > **CLI Options:** Script defaults are pre-configured for standardized runs. Pass `-h` to view optional parameters (e.g., custom durations, algorithms, or setpoint profiles):
 > ```bash
 > python3 scripts/test/run_baselines.py -h
@@ -53,20 +56,57 @@ All dynamic evaluations are executed from `dcs-ctrl-node` using calibrated defau
 > 
 > 
 
-For remote shells (Proxmox / Bare-Metal), launch long-running batches inside `tmux` to ensure session persistence.
+---
 
 ### 3.1 Dynamic Multi-Step Baseline (`run_baselines.py`)
 
 Evaluates line-rate tracking performance across Discrete PID, Smith Predictor, and Resilient PID over a standardized step sequence ($SP: 60\% \to 65\% \to 70\% \to 48\% \to 65\% \to 55\%$).
 
-```bash
-# Primary Target (Docker):
-docker exec -it dcs-ctrl-node python3 scripts/test/run_baselines.py
+#### Target A: Bare-Metal Raspberry Pi
 
-# Remote Deployments (Proxmox CT 201 / Raspberry Pi via SSH):
-# tmux new -s baselines "python3 scripts/test/run_baselines.py"
+Launch via transient systemd unit on the physical control node over SSH:
+
+```bash
+# 1. Launch transient systemd unit
+ssh admin@dcs-ctrl-node "sudo systemd-run --unit=dcs-baseline-runner --description='DCS Baseline Step Response Suite' \
+    --working-directory=/opt/resilient-wireless-pid --setenv=PYTHONUNBUFFERED=1 \
+    /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py"
+
+# 2. Stream execution log in real time (safe to detach/reconnect at any time)
+ssh admin@dcs-ctrl-node "journalctl -u dcs-baseline-runner -f -o cat"
 
 ```
+
+#### Target B: Local Docker Twin
+
+Launch detached from the host terminal; logs stream to disk via bind mount:
+
+```bash
+# 1. Launch detached runner process
+docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
+  bash -c "python3 scripts/test/run_baselines.py > data_exports/test_execution.log 2>&1"
+
+# 2. Monitor real-time output (from host repository root or inside container)
+tail -f ./data_exports/test_execution.log
+
+```
+
+#### Target C: Proxmox VE (LXC CT 201)
+
+Launch via transient unit inside CT 201 (from hypervisor host or container shell):
+
+```bash
+# 1. Launch transient systemd unit
+pct exec 201 -- systemd-run --unit=dcs-baseline-runner --description="DCS Baseline Step Response Suite" \
+  --working-directory=/opt/resilient-wireless-pid --setenv=PYTHONUNBUFFERED=1 \
+  python3 scripts/test/run_baselines.py
+
+# 2. Stream execution log in real time
+pct exec 201 -- journalctl -u dcs-baseline-runner -f -o cat
+
+```
+
+---
 
 ### 3.2 Network Impairment Parameter Sweeps (`run_sweeps.py`)
 
@@ -76,12 +116,41 @@ Executes the empirical network perturbation matrix across three stress vectors:
 2. **Vector 2 (Stochastic Jitter):** Normal and Pareto distributions at $40\text{ ms} \pm 15\text{ ms}$ (Discrete vs. Smith vs. Resilient).
 3. **Vector 3 (Burst Drops):** Gilbert-Elliott loss profiles $2\% \le \text{Loss} \le 20\%$ (Discrete vs. Resilient).
 
-```bash
-# Primary Target (Docker):
-docker exec -it dcs-ctrl-node python3 scripts/test/run_sweeps.py
+#### Target A: Bare-Metal Raspberry Pi
 
-# Remote Deployments (Proxmox CT 201 / Raspberry Pi via SSH):
-# tmux new -s sweeps "python3 scripts/test/run_sweeps.py"
+```bash
+# 1. Launch transient systemd unit
+ssh admin@dcs-ctrl-node "sudo systemd-run --unit=dcs-sweep-runner --description='DCS Network Impairment Parameter Sweeps' \
+    --working-directory=/opt/resilient-wireless-pid --setenv=PYTHONUNBUFFERED=1 \
+    /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py"
+
+# 2. Stream execution log in real time
+ssh admin@dcs-ctrl-node "journalctl -u dcs-sweep-runner -f -o cat"
+
+```
+
+#### Target B: Local Docker Twin
+
+```bash
+# 1. Launch detached runner process
+docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
+  bash -c "python3 scripts/test/run_sweeps.py > data_exports/test_execution.log 2>&1"
+
+# 2. Monitor real-time output
+tail -f ./data_exports/test_execution.log
+
+```
+
+#### Target C: Proxmox VE (LXC CT 201)
+
+```bash
+# 1. Launch transient systemd unit
+pct exec 201 -- systemd-run --unit=dcs-sweep-runner --description="DCS Network Impairment Parameter Sweeps" \
+  --working-directory=/opt/resilient-wireless-pid --setenv=PYTHONUNBUFFERED=1 \
+  python3 scripts/test/run_sweeps.py
+
+# 2. Stream execution log in real time
+pct exec 201 -- journalctl -u dcs-sweep-runner -f -o cat
 
 ```
 
@@ -89,18 +158,20 @@ docker exec -it dcs-ctrl-node python3 scripts/test/run_sweeps.py
 
 ## 4. Fail-Safe Shutdown & Emergency Recovery
 
-When an evaluation diverges or must be halted prematurely, two actions must occur: zeroing actuator effort ($u = 0.0\%$) and flushing kernel `tc` queuing disciplines.
+When an evaluation diverges or must be halted prematurely, two actions must occur: zeroing actuator effort ($u = 0.0\%$) and flushing kernel `tc` queuing disciplines on `wlan0`.
 
 ### 4.1 In-Band Graceful Interrupt
 
-If the terminal is attached to the running process, issue **`Ctrl + C`** (`SIGINT`). Both test runners trap this signal and execute their `finally:` blocks to de-energize the blower and clear the kernel qdisc automatically.
+If attached directly to the log streamer or foreground shell, issue **`Ctrl + C`** (`SIGINT`). The test harness traps this signal, stops C2 actuation, and executes kernel `tc` cleanup automatically.
 
 ### 4.2 Out-of-Band Emergency Takedown
 
-If the test runner hangs or the active session is disconnected:
+If the test runner hangs, diverges, or must be aborted while running detached:
+
+#### Local Docker Twin:
 
 ```bash
-# 1. Terminate the active test harness
+# 1. Terminate running Python test harness
 docker exec dcs-ctrl-node pkill -f run_sweeps.py || true
 docker exec dcs-ctrl-node pkill -f run_baselines.py || true
 
@@ -110,7 +181,37 @@ docker exec dcs-ctrl-node pkill -f run_baselines.py || true
 # 3. Flush orphaned kernel traffic control rules
 docker exec dcs-ctrl-node tc qdisc del dev wlan0 root 2>/dev/null || true
 
-# Note: On remote hosts, prefix these commands with SSH or 'pct exec 201 --'.
+```
+
+#### Proxmox VE (LXC CT 201):
+
+```bash
+# 1. Stop the transient systemd units
+pct exec 201 -- systemctl stop dcs-sweep-runner 2>/dev/null || true
+pct exec 201 -- systemctl stop dcs-baseline-runner 2>/dev/null || true
+
+# 2. Command zero-actuation failsafe via C2
+./scripts/c2_ctl.sh -t <CT201_IP> stop
+
+# 3. Flush orphaned kernel traffic control rules
+pct exec 201 -- tc qdisc del dev wlan0 root 2>/dev/null || true
+
+```
+
+#### Bare-Metal Raspberry Pi:
+
+```bash
+# 1. Stop the transient systemd units
+ssh admin@dcs-ctrl-node "sudo systemctl stop dcs-sweep-runner 2>/dev/null || true; sudo systemctl stop dcs-baseline-runner 2>/dev/null || true"
+
+# 2. Command zero-actuation failsafe via C2
+./scripts/c2_ctl.sh -t <RPI_CTRL_IP> stop
+
+# 3. Flush orphaned kernel traffic control rules
+ssh admin@dcs-ctrl-node "sudo tc qdisc del dev wlan0 root 2>/dev/null || true"
+
+# 4. Hardware Fail-Safe: Direct Actuator Cutoff (if controller daemon is hung)
+# ssh admin@dcs-plant-node "sudo python3 -c 'import smbus2; b=smbus2.SMBus(1); b.write_byte_data(0x4C, 0x4C, 0x00); b.close()'"
 
 ```
 

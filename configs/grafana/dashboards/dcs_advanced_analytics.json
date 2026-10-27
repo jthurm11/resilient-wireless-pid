@@ -4,7 +4,17 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": ["dcs"],
+      "title": "DCS Views",
+      "type": "dashboards"
+    }
+  ],
   "liveNow": true,
   "panels": [
     {
@@ -37,7 +47,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt_ms\")\n  |> yield(name: \"rtt_dist\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"rtt_ms\")\n  |> group()\n  |> yield(name: \"rtt_dist\")"
         }
       ],
       "options": {
@@ -85,7 +95,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> map(fn: (r) => ({ r with _value: if r._value < 0.0 then -r._value else r._value }))\n  |> group(columns: [\"trial_id\", \"algorithm\"])\n  |> sum()\n  |> yield(name: \"iae\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"error\")\n  |> map(fn: (r) => ({ r with _value: if r._value < 0.0 then -r._value else r._value }))\n  |> group(columns: [\"algorithm\", \"trial_id\"])\n  |> sum()\n  |> map(fn: (r) => ({\n      _time: r._time,\n      _value: r._value,\n      _field: r.algorithm + \" (\" + r.trial_id + \")\"\n  }))\n  |> group(columns: [\"_field\"])\n  |> yield(name: \"iae\")"
         }
       ],
       "options": {
@@ -97,6 +107,7 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
+          "displayName": "${__series.name}",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -116,7 +127,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_Flux" },
-          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"is_loss\")\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)\n  |> yield(name: \"link_state\")"
+          "query": "from(bucket: \"wireless_pid_metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"control_telemetry\")\n  |> filter(fn: (r) => r[\"_field\"] == \"is_loss\")\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)\n  |> map(fn: (r) => ({\n      _time: r._time,\n      _value: r._value,\n      _field: \"Link: \" + r.trial_id\n  }))\n  |> group(columns: [\"_field\"])\n  |> yield(name: \"link_state\")"
         }
       ],
       "options": {
@@ -129,6 +140,7 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "custom": { "fillOpacity": 80, "lineWidth": 0 },
+          "displayName": "${__series.name}",
           "mappings": [
             {
               "options": {
@@ -153,7 +165,7 @@
   "refresh": "1s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["dcs", "pid", "capstone", "analytics"],
+  "tags": ["dcs", "pid", "analytics"],
   "time": { "from": "now-5m", "to": "now" },
   "timezone": "browser",
   "title": "Wireless PID Advanced Analytics",

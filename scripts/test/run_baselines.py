@@ -412,6 +412,10 @@ def main() -> None:
         logger.error("Execution aborted: %s", err)
         orchestrator.stop_c2_actuation()
         orchestrator.tc.clear_rules()
+    finally:
+        logger.info("Sweep batch concluded. Actuator de-energized.")
+        orchestrator.stop_c2_actuation()
+        orchestrator.tc.clear_rules()
 
 
 if __name__ == "__main__":
