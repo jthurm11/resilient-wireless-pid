@@ -62,16 +62,28 @@ To ensure unattended test runs persist across SSH network disconnections and ter
 
 Evaluates line-rate tracking performance across Discrete PID, Smith Predictor, and Resilient PID over a standardized step sequence ($SP: 60\% \to 65\% \to 70\% \to 48\% \to 65\% \to 55\%$).
 
-#### Primary Target: Local Docker Twin
+#### Target A: Bare-Metal Raspberry Pi
+
+Launch via transient systemd unit on the physical control node over SSH:
+
+```bash
+# 1. Launch transient systemd unit
+ssh admin@dcs-ctrl-node "sudo systemd-run --unit=dcs-baseline-runner --description='DCS Baseline Step Response Suite' \
+    --working-directory=/opt/resilient-wireless-pid --setenv=PYTHONUNBUFFERED=1 \
+    /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py"
+
+# 2. Stream execution log in real time (safe to detach/reconnect at any time)
+ssh admin@dcs-ctrl-node "journalctl -u dcs-baseline-runner -f -o cat"
+
+```
+
+#### Target B: Local Docker Twin
 
 Launch detached from the host terminal; logs stream to disk via bind mount:
 
 ```bash
 # 1. Launch detached runner process
-docker exec -d \
-  -w /opt/resilient-wireless-pid \
-  -e PYTHONUNBUFFERED=1 \
-  dcs-ctrl-node \
+docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
   bash -c "python3 scripts/test/run_baselines.py > data_exports/test_execution.log 2>&1"
 
 # 2. Monitor real-time output (from host repository root or inside container)
@@ -79,40 +91,18 @@ tail -f ./data_exports/test_execution.log
 
 ```
 
-#### Secondary Target: Proxmox VE (LXC CT 201)
+#### Target C: Proxmox VE (LXC CT 201)
 
 Launch via transient unit inside CT 201 (from hypervisor host or container shell):
 
 ```bash
 # 1. Launch transient systemd unit
-pct exec 201 -- systemd-run \
-  --unit=dcs-baseline-runner \
-  --description="DCS Baseline Step Response Suite" \
-  --working-directory=/opt/resilient-wireless-pid \
-  --setenv=PYTHONUNBUFFERED=1 \
+pct exec 201 -- systemd-run --unit=dcs-baseline-runner --description="DCS Baseline Step Response Suite" \
+  --working-directory=/opt/resilient-wireless-pid --setenv=PYTHONUNBUFFERED=1 \
   python3 scripts/test/run_baselines.py
 
 # 2. Stream execution log in real time
 pct exec 201 -- journalctl -u dcs-baseline-runner -f -o cat
-
-```
-
-#### Secondary Target: Bare-Metal Raspberry Pi
-
-Launch via transient systemd unit on the physical control node over SSH:
-
-```bash
-# 1. Launch transient systemd unit
-ssh admin@dcs-ctrl-node \
-  "sudo systemd-run \
-    --unit=dcs-baseline-runner \
-    --description='DCS Baseline Step Response Suite' \
-    --working-directory=/opt/resilient-wireless-pid \
-    --setenv=PYTHONUNBUFFERED=1 \
-    /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py"
-
-# 2. Stream execution log in real time (safe to detach/reconnect at any time)
-ssh admin@dcs-ctrl-node "journalctl -u dcs-baseline-runner -f -o cat"
 
 ```
 
@@ -126,14 +116,24 @@ Executes the empirical network perturbation matrix across three stress vectors:
 2. **Vector 2 (Stochastic Jitter):** Normal and Pareto distributions at $40\text{ ms} \pm 15\text{ ms}$ (Discrete vs. Smith vs. Resilient).
 3. **Vector 3 (Burst Drops):** Gilbert-Elliott loss profiles $2\% \le \text{Loss} \le 20\%$ (Discrete vs. Resilient).
 
-#### Primary Target: Local Docker Twin
+#### Target A: Bare-Metal Raspberry Pi
+
+```bash
+# 1. Launch transient systemd unit
+ssh admin@dcs-ctrl-node "sudo systemd-run --unit=dcs-sweep-runner --description='DCS Network Impairment Parameter Sweeps' \
+    --working-directory=/opt/resilient-wireless-pid --setenv=PYTHONUNBUFFERED=1 \
+    /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py"
+
+# 2. Stream execution log in real time
+ssh admin@dcs-ctrl-node "journalctl -u dcs-sweep-runner -f -o cat"
+
+```
+
+#### Target B: Local Docker Twin
 
 ```bash
 # 1. Launch detached runner process
-docker exec -d \
-  -w /opt/resilient-wireless-pid \
-  -e PYTHONUNBUFFERED=1 \
-  dcs-ctrl-node \
+docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
   bash -c "python3 scripts/test/run_sweeps.py > data_exports/test_execution.log 2>&1"
 
 # 2. Monitor real-time output
@@ -141,36 +141,16 @@ tail -f ./data_exports/test_execution.log
 
 ```
 
-#### Secondary Target: Proxmox VE (LXC CT 201)
+#### Target C: Proxmox VE (LXC CT 201)
 
 ```bash
 # 1. Launch transient systemd unit
-pct exec 201 -- systemd-run \
-  --unit=dcs-sweep-runner \
-  --description="DCS Network Impairment Parameter Sweeps" \
-  --working-directory=/opt/resilient-wireless-pid \
-  --setenv=PYTHONUNBUFFERED=1 \
+pct exec 201 -- systemd-run --unit=dcs-sweep-runner --description="DCS Network Impairment Parameter Sweeps" \
+  --working-directory=/opt/resilient-wireless-pid --setenv=PYTHONUNBUFFERED=1 \
   python3 scripts/test/run_sweeps.py
 
 # 2. Stream execution log in real time
 pct exec 201 -- journalctl -u dcs-sweep-runner -f -o cat
-
-```
-
-#### Secondary Target: Bare-Metal Raspberry Pi
-
-```bash
-# 1. Launch transient systemd unit
-ssh admin@dcs-ctrl-node \
-  "sudo systemd-run \
-    --unit=dcs-sweep-runner \
-    --description='DCS Network Impairment Parameter Sweeps' \
-    --working-directory=/opt/resilient-wireless-pid \
-    --setenv=PYTHONUNBUFFERED=1 \
-    /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py"
-
-# 2. Stream execution log in real time
-ssh admin@dcs-ctrl-node "journalctl -u dcs-sweep-runner -f -o cat"
 
 ```
 
