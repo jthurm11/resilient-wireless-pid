@@ -558,7 +558,9 @@ def restore_service(
 
     should_start = force_restart or was_active
     if not should_start:
-        logger.debug("Service %s was inactive prior to test run; skipping restart.", service_name)
+        logger.debug(
+            "Service %s was inactive prior to test run; skipping restart.", service_name
+        )
         return
 
     logger.info("Initiating restart of background daemon: %s...", service_name)
@@ -888,7 +890,9 @@ def main() -> None:
     plant: BasePlant
     if args.mode == "hardware":
         if not HARDWARE_AVAILABLE:
-            logger.error("Physical drivers unavailable. Falling back to simulated twin.")
+            logger.error(
+                "Physical drivers unavailable. Falling back to simulated twin."
+            )
             plant = SimulatedPlant(
                 tube_length_m=effective_tube_length_cm / 100.0,
                 tube_type=args.tube_type,
