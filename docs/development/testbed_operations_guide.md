@@ -30,6 +30,7 @@ Ensure the testbed services are operational prior to executing trials:
 
 ```bash
 # Query C2 state engine (run from host workspace or control node shell):
+# Optionally query remote C2 target: ./scripts/c2_ctl.sh -t <NODE_IP> status
 ./scripts/c2_ctl.sh status
 
 # For physical hardware deployments only: execute actuator/sensor sanity check:
@@ -210,7 +211,7 @@ pct exec 201 -- systemctl stop dcs-sweep-runner 2>/dev/null || true
 pct exec 201 -- systemctl stop dcs-baseline-runner 2>/dev/null || true
 
 # 2. Command zero-actuation failsafe via C2
-./scripts/c2_ctl.sh stop
+./scripts/c2_ctl.sh -t <CT201_IP> stop
 
 # 3. Flush orphaned kernel traffic control rules
 pct exec 201 -- tc qdisc del dev wlan0 root 2>/dev/null || true
@@ -224,7 +225,7 @@ pct exec 201 -- tc qdisc del dev wlan0 root 2>/dev/null || true
 ssh admin@dcs-ctrl-node "sudo systemctl stop dcs-sweep-runner 2>/dev/null || true; sudo systemctl stop dcs-baseline-runner 2>/dev/null || true"
 
 # 2. Command zero-actuation failsafe via C2
-./scripts/c2_ctl.sh stop
+./scripts/c2_ctl.sh -t <RPI_CTRL_IP> stop
 
 # 3. Flush orphaned kernel traffic control rules
 ssh admin@dcs-ctrl-node "sudo tc qdisc del dev wlan0 root 2>/dev/null || true"
