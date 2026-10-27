@@ -38,9 +38,9 @@
               "type": "value",
               "options": {
                 "docker": { "text": "Docker", "color": "pink", "index": 0 },
-                "proxmox": { "text": "LXC", "color": "orange", "index": 1 },
-                "rpi": { "text": "Raspberry Pi", "color": "blue", "index": 2 },
-                "baremetal": { "text": "Baremetal", "color": "purple", "index": 3 }
+                "proxmox_lxc": { "text": "LXC", "color": "orange", "index": 1 },
+                "bare_metal": { "text": "Raspberry Pi", "color": "light-blue", "index": 2 },
+                "hardware": { "text": "Hardware", "color": "blue", "index": 3 }
               }
             }
           ]
