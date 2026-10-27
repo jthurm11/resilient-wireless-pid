@@ -425,6 +425,11 @@ def main() -> None:
             "Sweep batch concluded. Actuator de-energized. Data saved in %s",
             orchestrator.data_export_dir,
         )
+    finally:
+        logger.info("Sweep batch concluded. Actuator de-energized.")
+        orchestrator.stop_c2_actuation()
+        orchestrator.tc.clear_rules()
+
 
 
 if __name__ == "__main__":
