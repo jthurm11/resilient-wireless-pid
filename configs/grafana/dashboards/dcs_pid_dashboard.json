@@ -82,7 +82,7 @@
                 "discrete": { "text": "Discrete PID", "color": "magenta", "index": 0 },
                 "baseline": { "text": "Discrete PID (Legacy)", "color": "red", "index": 1 },
                 "smith": { "text": "Smith Predictor", "color": "cyan", "index": 2 },
-                "resilient": { "text": "Resilient Observer PID", "color": "light-green", "index": 3 }
+                "resilient": { "text": "Resilient Observer", "color": "light-green", "index": 3 }
               }
             }
           ]
@@ -273,12 +273,6 @@
             "properties": [
               { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } },
               { "id": "custom.lineStyle", "value": { "dash": [4, 4], "fill": "dash" } }
-            ]
-          },
-          {
-            "matcher": { "id": "byRegexp", "options": ".*PV:.*" },
-            "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
             ]
           }
         ]
