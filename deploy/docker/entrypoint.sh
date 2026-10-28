@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-# Keep eth0 intact for Docker proxying, and alias/link wlan0 for netem testing if required
-if ! ip link show dev wlan0 >/dev/null 2>&1; then
-    # Add dummy or macvlan device if strict wlan0 naming is required
-    ip link add wlan0 type dummy 2>/dev/null || true
+# If wlan0 does not exist, provision a macvlan or macvtap sub-interface over eth0
+if ! ip link show dev wlan0 >/dev/null 2>&1 && ip link show dev eth0 >/dev/null 2>&1; then
+    ip link add link eth0 name wlan0 type macvlan mode bridge
+    ip link set dev wlan0 up
 fi
 
-# Execute CMD passed from compose
 exec "$@"
