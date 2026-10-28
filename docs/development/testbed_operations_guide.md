@@ -50,7 +50,7 @@ sudo systemctl reset-failed                                        # Reset faile
 
 # === Docker (executed on Docker host) ===
 tail -f data_exports/test_execution-<baselines|sweeps|stage4>.log  # Stream logs (written locally to Docker host)
-docker exec dcs-ctrl-node pkill -f python3                         # Abort execution
+docker top dcs-ctrl-node | grep -E "run_baselines|run_sweeps"      # Find process ID to terminate execution `pkill <PID>`
 
 # === Proxmox LXC (executed on Proxmox VE host) ===
 pct exec 201 -- systemctl status <dcs-run-baselines|dcs-run-sweeps> 
@@ -71,25 +71,41 @@ Execute **only one** path corresponding to your target runtime environment. Stag
 **Context:** Controller Node (`dcs-ctrl-node`); Root Path: `/opt/resilient-wireless-pid`
 
 ```bash
-# Stage 0: Quiet Baselines
+# Stage 0: Quiet Baselines (Perform 3 consecutive runs)
 sudo systemd-run --unit=dcs-run-baselines --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
 
+# Wait until service completes, then run:
+systemctl reset-failed dcs-baseline-runner 2>/dev/null || true
+```
+```bash
 # Stages 1–3: Netem Impairment Sweeps
 sudo systemd-run --unit=dcs-run-sweeps --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py
 ```
 
 #### Stage 4 (Adversary Cross-Traffic)
 
-Execute the following steps in tandem: 
+Perform four consecutive runs of the below steps to accomplish baseline trails against these target rates: 
+1. Light Loading: 2 Mbps (`iperf3 -c 10.10.10.1 -u -b 2M -t 1200`) 
+2. Medium Loading: 5 Mbps (`iperf3 -c 10.10.10.1 -u -b 5M -t 1200`) 
+3. Heavy Loading: 10 Mbps (`iperf3 -c 10.10.10.1 -u -b 10M -t 1200`) 
+4. Channel Saturation: Uncapped / Maximum Link Rate (`iperf3 -c 10.10.10.1 -u -b 0 -t 1200`)
+
+
+Execute the following steps in tandem, substituting the `iperf3` command for desired target rate on each consecutive run: 
 
 1. **Context:** Plant Node (`dcs-plant-node` or secondary traffic generator node):
    ```bash
-   iperf3 -c 10.10.10.1 -u -b 10M -t 1200
+   # Rate 1 - Light Loading (2Mbps)
+   iperf3 -c 10.10.10.1 -u -b 2M -t 1200
    ```
 2. **Context:** Controller Node (`dcs-ctrl-node`); Root Path: `/opt/resilient-wireless-pid`:
    ```bash
    sudo systemd-run --unit=dcs-run-stage4 --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
    ```
+Once `run_baselines.py` completes, reset the systemd unit before the next execution: 
+```bash
+sudo systemctl reset-failed dcs-run-stage4
+```
 
 ---
 
@@ -100,11 +116,14 @@ Execute the following steps in tandem:
 **Context:** Local Docker Host, Root Path: Repository Root
 
 ```bash
-# Stage 0: Quiet Baselines
-docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_baselines.py >> data_exports/test_execution-baselines.log 2>&1
-
+# Stage 0: Quiet Baselines (Perform 3 consecutive runs)
+docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
+  bash -c "python3 scripts/test/run_baselines.py >> data_exports/test_execution-baselines.log 2>&1" 
+```
+```bash
 # Stages 1–3: Netem Impairment Sweeps
-docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_sweeps.py >> data_exports/test_execution-sweeps.log 2>&1
+docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
+  bash -c "python3 scripts/test/run_sweeps.py >> data_exports/test_execution-sweeps.log 2>&1" 
 ```
 
 #### Stage 4 (Adversary Cross-Traffic)
@@ -129,9 +148,13 @@ Execute the following steps in tandem:
 **Context:** Proxmox VE Host; Root Path: Host Shell
 
 ```bash
-# Stage 0: Quiet Baselines
+# Stage 0: Quiet Baselines (Perform 3 consecutive runs)
 pct exec 201 -- systemd-run --unit=dcs-run-baselines --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
 
+# Wait until service completes, then run:
+pct exec 201 -- systemctl reset-failed dcs-baseline-runner 2>/dev/null || true
+```
+```bash
 # Stages 1–3: Netem Impairment Sweeps
 pct exec 201 -- systemd-run --unit=dcs-run-sweeps --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py
 ```
