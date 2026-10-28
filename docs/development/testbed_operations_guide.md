@@ -43,16 +43,18 @@ Use these standardized utilities to inspect status, abort, or reset transient te
 
 ```bash
 # === Bare-Metal Hardware (executed on dcs-ctrl-node) ===
-systemctl --user status <dcs-run-baselines|dcs-run-sweeps>    # Status / Logs
-systemctl --user stop <dcs-run-baselines|dcs-run-sweeps>      # Abort execution
-systemctl --user reset-failed                                 # Reset failed state
+sudo systemctl status <dcs-run-baselines|dcs-run-sweeps>           # Status
+sudo journalctl -u <dcs-run-baselines|dcs-run-sweeps> -f -o cat    # Logs
+sudo systemctl stop <dcs-run-baselines|dcs-run-sweeps>             # Abort execution
+sudo systemctl reset-failed                                        # Reset failed state
 
 # === Docker (executed on Docker host) ===
-docker logs -f dcs-ctrl-node                                  # Stream logs
-docker exec dcs-ctrl-node pkill -f python3                    # Abort execution
+tail -f data_exports/test_execution-<baselines|sweeps|stage4>.log  # Stream logs (written locally to Docker host)
+docker exec dcs-ctrl-node pkill -f python3                         # Abort execution
 
 # === Proxmox LXC (executed on Proxmox VE host) ===
 pct exec 201 -- systemctl status <dcs-run-baselines|dcs-run-sweeps> 
+pct exec 201 -- journalctl -u <dcs-run-baselines|dcs-run-sweeps> -f -o cat 
 pct exec 201 -- systemctl stop <dcs-run-baselines|dcs-run-sweeps>
 pct exec 201 -- systemctl reset-failed
 ```
@@ -86,7 +88,7 @@ Execute the following steps in tandem:
    ```
 2. **Context:** Controller Node (`dcs-ctrl-node`); Root Path: `/opt/resilient-wireless-pid`:
    ```bash
-   sudo systemd-run --unit=dcs-run-baselines --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
+   sudo systemd-run --unit=dcs-run-stage4 --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
    ```
 
 ---
@@ -99,10 +101,10 @@ Execute the following steps in tandem:
 
 ```bash
 # Stage 0: Quiet Baselines
-docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_baselines.py
+docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_baselines.py >> data_exports/test_execution-baselines.log 2>&1
 
 # Stages 1–3: Netem Impairment Sweeps
-docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_sweeps.py
+docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_sweeps.py >> data_exports/test_execution-sweeps.log 2>&1
 ```
 
 #### Stage 4 (Adversary Cross-Traffic)
@@ -111,11 +113,11 @@ Execute the following steps in tandem:
 
 1. **Context:** Docker Host targetting Plant Container (`dcs-plant-node`):
    ```bash
-   docker exec -d dcs-plant-node iperf3 -c 127.0.0.1 -u -b 10M -t 1200
+   docker exec -d dcs-plant-node iperf3 -c 10.10.10.1 -u -b 10M -t 1200
    ```
 2. **Context:** Docker Host targetting Controller Container (`dcs-ctrl-node`):
    ```bash
-   docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_baselines.py
+   docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_baselines.py >> data_exports/test_execution-stage4.log 2>&1
    ```
 
 ---
@@ -168,14 +170,21 @@ python3 scripts/analysis/aggregate_and_postprocess.py --raw-dir data_exports --o
 **Context:** Target Controller Node / Container
 
 ```bash
-# 1. Clear Linux kernel traffic shaping qdiscs
-sudo tc qdisc del dev <wlan0|eth0|eth1> root 2>/dev/null || true
+# 1. Command zero-actuation failsafe via C2 (works across local and remote nodes)
+./scripts/c2_ctl.sh [-t <NODE_IP>] stop
 
-# 2. Halt active C2 control loops
-./scripts/c2_ctl.sh stop
+# 2. Clear Linux kernel traffic shaping qdiscs on control node
+# Docker:
+docker exec dcs-ctrl-node tc qdisc del dev wlan0 root 2>/dev/null || true
+
+# Proxmox LXC:
+pct exec 201 -- tc qdisc del dev wlan0 root 2>/dev/null || true
+
+# Bare-Metal:
+ssh admin@dcs-ctrl-node "sudo tc qdisc del dev wlan0 root 2>/dev/null || true"
 
 # 3. Confirm physical fan de-energization (Bare-Metal Pi Target Only)
-sudo i2cget -y 1 0x4c 0x4c    # Must return 0x00
+# ssh admin@dcs-plant-node "sudo i2cget -y 1 0x4c 0x4c"   # Must return 0x00
 ```
 
 > [!INFO]  
