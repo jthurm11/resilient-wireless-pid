@@ -380,10 +380,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/resilient-wireless-pid
+WorkingDirectory=${TARGET_DIR}
 Environment=\"DCS_ENV=proxmox_lxc\"
 EnvironmentFile=-/etc/environment
-ExecStart=${REPO_ROOT}/.venv/bin/run-plant --mode simulate --host 0.0.0.0 --port 5005
+ExecStart=${TARGET_DIR}/.venv/bin/run-plant --mode simulate --host 0.0.0.0 --port 5005
 Restart=on-failure
 RestartSec=3
 KillMode=mixed
@@ -408,11 +408,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/resilient-wireless-pid
+WorkingDirectory=${TARGET_DIR}
 Environment=\"DCS_ENV=proxmox_lxc\"
 Environment=\"PYTHONUNBUFFERED=1\"
 EnvironmentFile=-/etc/environment
-ExecStart=${REPO_ROOT}/.venv/bin/run-controller --enable-ui
+ExecStart=${TARGET_DIR}/.venv/bin/run-controller --enable-ui
 Restart=on-failure
 RestartSec=5
 CPUSchedulingPolicy=rr
