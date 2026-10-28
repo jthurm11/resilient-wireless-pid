@@ -2,14 +2,16 @@
 """
 scripts/test/run_sweeps.py
 Automated network impairment parameter sweep orchestrator.
-Optimized for unattended execution across dead-time, jitter, and burst loss distributions.
-Standardized for complete physical/network state export and deterministic naming.
+Refactored to integrate TrafficControlWrapper while preserving InfluxDB telemetry
+extraction and strict trial vector matrix specifications.
 """
 
 import argparse
+import atexit
 import logging
 import os
-import subprocess
+import signal
+import sys
 import time
 from dataclasses import dataclass
 
@@ -18,62 +20,40 @@ import pandas as pd
 import requests
 from influxdb_client import InfluxDBClient
 
+# Programmatic TrafficControl wrapper resolution
+try:
+    from resilient_pid.emulation.traffic_control import TrafficControlWrapper
+except ImportError:
+    try:
+        from traffic_control import TrafficControlWrapper
+    except ImportError:
+        TrafficControlWrapper = None
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("SweepOrchestrator")
 
 
-@dataclass
+@dataclass(frozen=True)
 class TrialConfig:
     """Deterministic configuration structure for an isolated parameter sweep trial."""
 
     trial_id: str
     algorithm: str
     setpoint: float
-    netem_args: list[str]
-    duration_sec: float
-    export_filename: str
-
-
-class TrafficController:
-    """Manages Linux kernel tc/netem queuing disciplines via iproute2."""
-
-    def __init__(self, interface: str):
-        self.interface = interface
-
-    def clear_rules(self) -> None:
-        """Purge root qdisc to restore clean, unshaped line-rate conditions."""
-        cmd = ["tc", "qdisc", "del", "dev", self.interface, "root"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0 and "No such file or directory" not in res.stderr:
-            logger.debug(
-                "tc cleanup notice (%s): %s", self.interface, res.stderr.strip()
-            )
-
-    def apply_netem(self, netem_args: list[str]) -> None:
-        """Attach configured netem qdisc rules to root egress."""
-        self.clear_rules()
-        cmd = [
-            "tc",
-            "qdisc",
-            "add",
-            "dev",
-            self.interface,
-            "root",
-            "netem",
-        ] + netem_args
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0:
-            logger.error(
-                "Failed executing tc rule '%s': %s", " ".join(cmd), res.stderr.strip()
-            )
-            raise RuntimeError(f"tc execution failed: {res.stderr.strip()}")
-        logger.info("Kernel netem applied: %s", " ".join(netem_args))
+    delay_ms: float = 0.0
+    jitter_ms: float = 0.0
+    delay_correlation_pct: float = 0.0
+    loss_pct: float = 0.0
+    loss_correlation_pct: float = 0.0
+    distribution: str = "normal"
+    duration_sec: float = 30.0
+    export_filename: str = ""
 
 
 class SweepOrchestrator:
-    """Coordinates empirical impairment sweeps across C2, netem, and InfluxDB."""
+    """Coordinates empirical impairment sweeps across C2, TrafficControl, and InfluxDB."""
 
     def __init__(
         self,
@@ -85,13 +65,19 @@ class SweepOrchestrator:
         influx_bucket: str = os.getenv("INFLUXDB_BUCKET", "wireless_pid_metrics"),
         data_export_dir: str = "/opt/resilient-wireless-pid/data_exports",
     ):
-        self.tc = TrafficController(interface)
+        self.interface = interface
         self.c2_url = c2_url.rstrip("/")
         self.influx_url = influx_url
         self.influx_token = influx_token
         self.influx_org = influx_org
         self.influx_bucket = influx_bucket
         self.data_export_dir = data_export_dir
+
+        if TrafficControlWrapper is not None:
+            self.tc = TrafficControlWrapper(interface=self.interface)
+        else:
+            logger.warning("TrafficControlWrapper unavailable; executing unshaped.")
+            self.tc = None
 
         os.makedirs(self.data_export_dir, exist_ok=True)
         self.influx_client = InfluxDBClient(
@@ -138,6 +124,12 @@ class SweepOrchestrator:
             logger.info("Plant blower safely de-energized (PWM zeroed).")
         except requests.RequestException:
             pass
+
+    def cleanup(self) -> None:
+        """Failsafe routine to unshape kernel egress and de-energize actuators."""
+        self.stop_c2_actuation()
+        if self.tc is not None:
+            self.tc.clear_rules()
 
     def wait_for_settled_state(
         self, target_sp: float = 60.0, max_wait_sec: float = 25.0
@@ -230,22 +222,34 @@ class SweepOrchestrator:
     def run_trial(self, config: TrialConfig) -> None:
         """Execute an isolated step response trial under target network conditions."""
         try:
-            # Clean link & stabilize at setpoint before applying impairment
-            self.tc.clear_rules()
+            # Clear link & stabilize at setpoint before applying impairment
+            if self.tc is not None:
+                self.tc.clear_rules()
+
             if not self.set_c2_state(
                 config.algorithm, config.setpoint, f"pre_{config.trial_id}"
             ):
                 raise RuntimeError("C2 rejected control initialization.")
             self.wait_for_settled_state(target_sp=config.setpoint, max_wait_sec=20.0)
 
-            # Inject impairment & commence formal evaluation
-            self.tc.apply_netem(config.netem_args)
-            self.set_c2_state(config.algorithm, config.setpoint, config.trial_id)
+            # Inject impairment via TrafficControlWrapper
+            if self.tc is not None:
+                self.tc.apply_rules(
+                    delay_ms=config.delay_ms,
+                    jitter_ms=config.jitter_ms,
+                    delay_correlation_pct=config.delay_correlation_pct,
+                    loss_pct=config.loss_pct,
+                    loss_correlation_pct=config.loss_correlation_pct,
+                    distribution=config.distribution,
+                )
 
+            # Commence formal evaluation window
+            self.set_c2_state(config.algorithm, config.setpoint, config.trial_id)
             time.sleep(config.duration_sec)
 
         finally:
-            self.tc.clear_rules()
+            if self.tc is not None:
+                self.tc.clear_rules()
 
         time.sleep(1.5)
         self.export_trial_csv(config.trial_id, config.export_filename)
@@ -260,15 +264,16 @@ class SweepOrchestrator:
 
         # Vector 1: Dead-time sweeps (discrete vs smith)
         for rtt_ms in range(10, 110, 10):
+            one_way_delay = float(rtt_ms // 2)
             for algo in ["discrete", "smith"]:
                 t_id = f"sweep_deadtime_{tube}_{algo}_RTT{rtt_ms}ms_{batch_ts}"
-                fname = f"sweep_deadtime_{tube}_{algo}_RTT{rtt_ms}ms_{batch_ts}.csv"
+                fname = f"{t_id}.csv"
                 trials.append(
                     TrialConfig(
                         trial_id=t_id,
                         algorithm=algo,
                         setpoint=target_sp,
-                        netem_args=["delay", f"{rtt_ms // 2}ms"],
+                        delay_ms=one_way_delay,
                         duration_sec=v1_dur,
                         export_filename=fname,
                     )
@@ -276,19 +281,21 @@ class SweepOrchestrator:
 
         # Vector 2: Stochastic jitter distributions (discrete, smith, resilient)
         jitter_profiles = [
-            ("gauss_40ms-j15ms", ["delay", "40ms", "15ms", "distribution", "normal"]),
-            ("pareto_40ms-j15ms", ["delay", "40ms", "15ms", "distribution", "pareto"]),
+            ("gauss_40ms-j15ms", 40.0, 15.0, "normal"),
+            ("pareto_40ms-j15ms", 40.0, 15.0, "pareto"),
         ]
-        for name, args in jitter_profiles:
+        for name, delay, jitter, dist in jitter_profiles:
             for algo in ["discrete", "smith", "resilient"]:
                 t_id = f"sweep_jitter_{tube}_{algo}_{name}_{batch_ts}"
-                fname = f"sweep_jitter_{tube}_{algo}_{name}_{batch_ts}.csv"
+                fname = f"{t_id}.csv"
                 trials.append(
                     TrialConfig(
                         trial_id=t_id,
                         algorithm=algo,
                         setpoint=target_sp,
-                        netem_args=args,
+                        delay_ms=delay,
+                        jitter_ms=jitter,
+                        distribution=dist,
                         duration_sec=v2_dur,
                         export_filename=fname,
                     )
@@ -298,13 +305,14 @@ class SweepOrchestrator:
         for loss_pct in [2, 5, 10, 15, 20]:
             for algo in ["discrete", "resilient"]:
                 t_id = f"sweep_loss_{tube}_{algo}_burst{loss_pct}pct_{batch_ts}"
-                fname = f"sweep_loss_{tube}_{algo}_burst{loss_pct}pct_{batch_ts}.csv"
+                fname = f"{t_id}.csv"
                 trials.append(
                     TrialConfig(
                         trial_id=t_id,
                         algorithm=algo,
                         setpoint=target_sp,
-                        netem_args=["loss", f"{loss_pct}%", "25%"],
+                        loss_pct=float(loss_pct),
+                        loss_correlation_pct=25.0,
                         duration_sec=v3_dur,
                         export_filename=fname,
                     )
@@ -355,7 +363,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--c2-url",
         type=str,
-        default="http://127.0.0.1:5050",
+        default=os.getenv("C2_URL", "http://127.0.0.1:5050"),
         help="Supervisory C2 REST API endpoint",
     )
     parser.add_argument(
@@ -389,10 +397,20 @@ def main() -> None:
     args = parse_args()
     orchestrator = SweepOrchestrator(interface=args.interface, c2_url=args.c2_url)
 
+    # Register POSIX and runtime teardown hooks
+    def _sig_trap(signum, _frame):
+        logger.warning(
+            "Interrupted by signal %d; running emergency teardown...", signum
+        )
+        orchestrator.cleanup()
+        sys.exit(128 + signum)
+
+    atexit.register(orchestrator.cleanup)
+    signal.signal(signal.SIGINT, _sig_trap)
+    signal.signal(signal.SIGTERM, _sig_trap)
+
     if args.duration is not None:
-        v1_dur = args.duration
-        v2_dur = args.duration
-        v3_dur = args.duration
+        v1_dur = v2_dur = v3_dur = args.duration
         logger.info(
             "Global duration override active: All vectors configured for %.1f seconds.",
             args.duration,
@@ -409,26 +427,14 @@ def main() -> None:
         )
 
     logger.info("Starting automated parameter sweeps on interface %s", args.interface)
-
     try:
         orchestrator.execute_matrix(v1_dur=v1_dur, v2_dur=v2_dur, v3_dur=v3_dur)
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by operator; cleaning up qdisc rules...")
-        orchestrator.tc.clear_rules()
-        orchestrator.stop_c2_actuation()
-    except Exception as e:
-        logger.error("Fatal error during sweep execution: %s", e)
-        orchestrator.tc.clear_rules()
-        orchestrator.stop_c2_actuation()
-        orchestrator.tc.clear_rules()
+    finally:
         logger.info(
             "Sweep batch concluded. Actuator de-energized. Data saved in %s",
             orchestrator.data_export_dir,
         )
-    finally:
-        logger.info("Sweep batch concluded. Actuator de-energized.")
-        orchestrator.stop_c2_actuation()
-        orchestrator.tc.clear_rules()
+        orchestrator.cleanup()
 
 
 if __name__ == "__main__":
