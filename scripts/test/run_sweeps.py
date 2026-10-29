@@ -189,6 +189,7 @@ class SweepOrchestrator:
                     "_time",
                     "trial_id",
                     "algorithm",
+                    "adversary_rate_kbps",
                     "tube_type",
                     "tube_length_cm",
                     "tube_inner_dia_mm",
@@ -206,7 +207,7 @@ class SweepOrchestrator:
                 ]
                 for col in canonical_cols:
                     if col not in df.columns:
-                        df[col] = np.nan
+                        df[col] = 0 if col == "adversary_rate_kbps" else np.nan
 
                 extra_cols = [c for c in df.columns if c not in canonical_cols]
                 export_df = df[canonical_cols + extra_cols]

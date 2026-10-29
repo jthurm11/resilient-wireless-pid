@@ -398,7 +398,11 @@ def main() -> None:
     try:
         for algo in target_algos:
             # Descriptive naming indexing algorithm, rate, and timestamp
-            prefix = "baseline" if args.adversary_rate == 0 else f"crosstraffic_{args.adversary_rate}k"
+            prefix = (
+                "baseline"
+                if args.adversary_rate == 0
+                else f"crosstraffic_{args.adversary_rate}k"
+            )
             trial_id = f"{prefix}_{args.tube_type}_{algo}_SP50-70_{session_ts}"
             export_filename = f"{trial_id}.csv"
 
