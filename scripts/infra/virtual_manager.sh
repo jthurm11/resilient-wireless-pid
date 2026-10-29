@@ -27,7 +27,7 @@ header_info() {
   cat <<"EOF"
     ____            _ _ _            __     ____  ________ 
    / __ \___  _____(_) (_)__  ____  / /_   / __ \/  _/ __ \
-  / /_/ / _ \/ ___/ / / / _ \/ __ \/ __/  / /_/ // // / / /
+  / /_/ / _ \/ ___/ / / / _ \/ __ \/ __/  / /_/ // // / / / 
  / _, _/  __(__  ) / / /  __/ / / / /_   / ____// // /_/ / 
 /_/ |_|\___/____/_/_/_/\___/_/ /_/\__/  /_/   /___/_____/  
                                                            
@@ -36,9 +36,8 @@ EOF
 }
 
 print_usage() {
-  # Renders CLI usage and option descriptions to stdout.
   cat <<EOF
-Usage: $0 [docker|lxc] {create|destroy|status} [options]
+Usage: $0 [docker|lxc|lxc-guest] {create|destroy|status|sync} [options] [branch]
 
 Commands:
   create          Build and deploy multi-node testbed containers and networks
@@ -47,7 +46,7 @@ Commands:
   sync            Synchronize local workspace with upstream changes
 
 Positional Arguments:
-  backend         Target runtime: 'docker' or 'lxc' (autodetected if omitted)
+  backend         Target runtime: 'docker', 'lxc' (hypervisor), or 'lxc-guest' (autodetected if omitted)
 
 Options:
   -h, --help      Display this help message and exit
@@ -60,8 +59,6 @@ msg_ok()    { echo -e "\r\033[K${TAB}${GN}[OK]${CL} $1"; }
 msg_error() { echo -e "\r\033[K${TAB}${RD}[ERROR]${CL} $1"; exit 1; }
 
 parse_cli_arguments() {
-  # Parses command line arguments and options.
-  # Args: $@ (raw CLI parameters)
   for arg in "$@"; do
     case "$arg" in
       -h|--help)
@@ -72,7 +69,7 @@ parse_cli_arguments() {
       -q|--no-header)
         SHOW_HEADER=false
         ;;
-      docker|lxc)
+      docker|lxc|lxc-guest)
         TARGET="$arg"
         ;;
       create|destroy|status|sync)
@@ -113,7 +110,24 @@ resolve_repository_workspace() {
 }
 
 auto_detect_target() {
-  # Detects available hypervisor or container subsystems to assign TARGET backend.
+  # First Check: Are we executing directly inside an LXC guest container?
+  local is_lxc_guest=false
+
+  # Check standard virtual container indicators and the anchored environment variable
+  if [ "${DCS_ENV:-}" = "proxmox_lxc" ]; then
+    is_lxc_guest=true
+  elif command -v systemd-detect-virt >/dev/null 2>&1 && [ "$(systemd-detect-virt --container)" = "lxc" ]; then
+    is_lxc_guest=true
+  elif [ -f /proc/1/environ ] && grep -qa "container=lxc" /proc/1/environ 2>/dev/null; then
+    is_lxc_guest=true
+  fi
+
+  if [ "$is_lxc_guest" = true ]; then
+    TARGET="lxc-guest"
+    return
+  fi
+
+  # Hypervisor / Host Subsystem Detection
   local has_pve=false
   local has_docker=false
 
@@ -223,7 +237,6 @@ pve_configure_kernel() {
 pve_configure_network() {
   # Configures isolated Linux bridge for inter-node control datagrams.
   msg_info "Detecting or provisioning isolated DCS bridge"
-
   local existing_bridge
   existing_bridge=$(awk '/^iface vmbr/ { iface=$2 } /DCS traffic/ { print iface; exit }' /etc/network/interfaces)
 
@@ -233,13 +246,9 @@ pve_configure_network() {
   else
     local max_vmbr
     max_vmbr=$(grep -oP '^iface vmbr\K\d+' /etc/network/interfaces | sort -nr | head -n 1)
-
-    # Handle edge case where no vmbr interfaces exist
     if [ -z "$max_vmbr" ]; then
        max_vmbr=-1
     fi
-
-    # Calculate next available bridge ID
     DCS_BRIDGE="vmbr$((max_vmbr + 1))"
 
     cat <<EOF >> /etc/network/interfaces
@@ -344,21 +353,16 @@ pve_setup_systemd_services() {
 
   for ctid in 201 202; do
     pct exec "$ctid" -- bash -c '
-      # Systemd EnvironmentFile target (overwrite, do not append with >>)
       echo "DCS_ENV=proxmox_lxc" > /etc/environment
-
-      # Login shells and non-interactive profile loaders
       cat << "EOF" > /etc/profile.d/dcs_env.sh
 export DCS_ENV=proxmox_lxc
 EOF
       chmod +x /etc/profile.d/dcs_env.sh
 
-      # Interactive non-login bash shells (pct enter)
       if ! grep -q "DCS_ENV" /root/.bashrc; then
         echo "export DCS_ENV=proxmox_lxc" >> /root/.bashrc
       fi
 
-      # 4Virtual environment activation hook
       if [ -f /opt/resilient-wireless-pid/.venv/bin/activate ]; then
         if ! grep -q "DCS_ENV" /opt/resilient-wireless-pid/.venv/bin/activate; then
           echo "export DCS_ENV=proxmox_lxc" >> /opt/resilient-wireless-pid/.venv/bin/activate
@@ -500,7 +504,7 @@ status_lxc() {
 }
 
 sync_lxc() {
-  # Synchronizes host and LXC containers, reinstalls dependencies, and restarts services.
+  # Executed on Proxmox VE hypervisor host
   echo -e "${BOLD}Synchronizing LXC Environment to '${TARGET_BRANCH}'...${CL}"
 
   msg_info "Synchronizing host workspace to '${TARGET_BRANCH}'"
@@ -536,6 +540,52 @@ sync_lxc() {
   done
 }
 
+sync_lxc_guest() {
+  # Executed locally inside an LXC guest container (e.g. via pct enter 201/202)
+  echo -e "${BOLD}Synchronizing LXC Guest Environment to '${TARGET_BRANCH}'...${CL}"
+  
+  local app_dir="${TARGET_DIR}"
+  if [ ! -d "$app_dir" ]; then
+    app_dir="$REPO_ROOT"
+  fi
+
+  cd "$app_dir" || msg_error "Workspace directory not found: ${app_dir}"
+
+  msg_info "Pulling branch '${TARGET_BRANCH}'"
+  git fetch origin >/dev/null 2>&1
+  git checkout "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Checkout failed: $TARGET_BRANCH"
+  git pull origin "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Pull failed: $TARGET_BRANCH"
+  msg_ok "Repository synchronized"
+
+  if [ -f ".venv/bin/activate" ]; then
+    msg_info "Refreshing Python package metadata in .venv"
+    # shellcheck source=/dev/null
+    source .venv/bin/activate
+    pip install -e . --no-deps >/dev/null 2>&1
+    msg_ok "Python package metadata updated"
+  fi
+
+  # Restart node-specific systemd daemon if present
+  if systemctl list-unit-files | grep -q "^dcs-controller.service"; then
+    msg_info "Restarting dcs-controller.service"
+    systemctl restart dcs-controller.service
+    msg_ok "dcs-controller active"
+
+    # Refresh container-local telemetry containers (InfluxDB/Grafana) if script is present
+    if [ -f "./scripts/infra/telemetry_stack.sh" ]; then
+      msg_info "Ensuring telemetry containers are online"
+      ./scripts/infra/telemetry_stack.sh create --no-header >/dev/null 2>&1
+      msg_ok "Telemetry stack refreshed"
+    fi
+  elif systemctl list-unit-files | grep -q "^dcs-plant.service"; then
+    msg_info "Restarting dcs-plant.service"
+    systemctl restart dcs-plant.service
+    msg_ok "dcs-plant active"
+  fi
+
+  echo -e "\n${GN}${BOLD}LXC Guest Node Synchronized.${CL}\n"
+}
+
 parse_cli_arguments "$@"
 header_info
 
@@ -543,13 +593,19 @@ if [ -z "$TARGET" ]; then
   auto_detect_target
 fi
 
+# Guard against lifecycle actions running inside the guest container
+if [ "$TARGET" = "lxc-guest" ] && [ "$ACTION" != "sync" ]; then
+  msg_error "Action '${ACTION}' must be executed from the Proxmox VE hypervisor host, not inside an LXC guest container."
+fi
+
 case "${TARGET}:${ACTION}" in
-  docker:create)  create_docker ;;
-  docker:destroy) destroy_docker ;;
-  docker:status)  status_docker ;;
-  docker:sync)    sync_docker ;;
-  lxc:create)     create_lxc ;;
-  lxc:destroy)    destroy_lxc ;;
-  lxc:status)     status_lxc ;;
-  lxc:sync)       sync_lxc ;;
+  docker:create)     create_docker ;;
+  docker:destroy)    destroy_docker ;;
+  docker:status)     status_docker ;;
+  docker:sync)       sync_docker ;;
+  lxc:create)        create_lxc ;;
+  lxc:destroy)       destroy_lxc ;;
+  lxc:status)        status_lxc ;;
+  lxc:sync)          sync_lxc ;;
+  lxc-guest:sync)    sync_lxc_guest ;;
 esac
