@@ -621,9 +621,9 @@ def run_op_test(
     else:
         logger.info(
             "Geometry Verified: Distance to ball = %.2f cm (std: %.2f cm) | Configured Tube = %.1f cm",
-        baseline_dist_cm,
-        baseline_std_cm,
-        plant.tube_length_cm,
+            baseline_dist_cm,
+            baseline_std_cm,
+            plant.tube_length_cm,
         )
 
     logger.info("=================================================================")
