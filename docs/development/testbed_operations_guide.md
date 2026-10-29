@@ -3,7 +3,7 @@
 This document defines repeatable test execution steps for running the **84 standardized trial scenarios** across the three core control architectures:
 - **`discrete`**: Standard Discrete PID (`DiscretePID`) with derivative filtering ($\tau_f = 0.35\text{ s}$) and anti-windup clamping.
 - **`smith`**: Smith Predictor dead-time compensator (`SmithPredictor`) with 2nd-order discrete ARX plant model and circular delay buffer.
-- **`resilient`**: Resilient Predictive Observer PID (`ResilientPID`) with 1-step recursive ARX prediction and integral freezing ($\Delta I = 0$) during packet dropouts ($is\_loss = True$).
+- **`resilient`**: Resilient Predictive Observer PID (`ResilientPID`) with 1-step recursive ARX prediction and integral freezing ($\Delta I = 0$) during packet dropouts (`is_loss = True`).
 
 ## Execution Matrix
 
@@ -33,30 +33,52 @@ Deploy and verify the targeted runtime environment per its setup guide **in its 
 * **Proxmox LXC Target:** Deployed per [Virtual Environment Guide](virtual_environment_guide.md).
 
 > [!INFO]  
-> **Telemetry Stack:** Deployed automatically during `dcs-ctrl-node` bootstrapping. Refer to the [Telemetry UI Guide](telemetry_ui_guide.md) for usage details. 
->  
+> **Telemetry Stack:** Deployed automatically during `dcs-ctrl-node` bootstrapping. Refer to the [Telemetry UI Guide](telemetry_ui_guide.md) for usage details.
 
 
 ## 2. Service Lifecycle Management
 
-Use these standardized utilities to inspect status, abort, or reset transient test services across environments:
+Use these standardized utilities to inspect status, view historical or live logs, abort runs, or reset failed units across all three deployment environments:
 
 ```bash
 # === Bare-Metal Hardware (executed on dcs-ctrl-node) ===
-sudo systemctl status <dcs-run-baselines|dcs-run-sweeps>           # Status
-sudo journalctl -u <dcs-run-baselines|dcs-run-sweeps> -f -o cat    # Logs
-sudo systemctl stop <dcs-run-baselines|dcs-run-sweeps>             # Abort execution
-sudo systemctl reset-failed                                        # Reset failed state
+# Status: Print full status & recent logs without pagination; enable terminal wrapping
+sudo systemctl status <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4> --no-pager -l
+# Logs (Historical): Print full unit log history to stdout (non-blocking, wrapped)
+sudo journalctl -u <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4> --no-pager -l -o cat
+# Logs (Live Follow): Follow stdout/stderr streams in real time
+sudo journalctl -u <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4> -f -o cat
+# Abort Execution: Terminate the unit control group (sends SIGTERM, then SIGKILL)
+sudo systemctl stop <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4>
+# Reset Failed State: Clear transient unit failure markers
+sudo systemctl reset-failed <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4>
 
-# === Docker (executed on Docker host) ===
-tail -f data_exports/test_execution-<baselines|sweeps|stage4>.log  # Stream logs (written locally to Docker host)
-docker top dcs-ctrl-node | grep -E "run_baselines|run_sweeps"      # Find process ID to terminate execution `pkill <PID>`
+# === Docker (executed on Docker workstation / host) ===
+# Status (Host Daemon): Query container PID table directly via Docker daemon
+docker top dcs-ctrl-node | grep -E "run_baselines|run_sweeps" || echo "No active test runner."
+# Status (In-Container /proc): Inspect virtual filesystem via shell
+docker exec dcs-ctrl-node sh -c 'grep -as "scripts/test" /proc/[0-9]*/cmdline | tr "\0" " "' || true
+# Logs (Historical): Print complete execution log buffer to terminal
+cat data_exports/test_execution-<baselines|sweeps|stage4>.log
+# Logs (Live Follow): Tail streaming execution logs
+tail -f data_exports/test_execution-<baselines|sweeps|stage4>.log
+# Abort Execution: Terminate running Python runner processes
+docker exec dcs-ctrl-node sh -c 'kill $(grep -l "scripts/test" /proc/[0-9]*/cmdline 2>/dev/null | cut -d/ -f3) 2>/dev/null || true'
+# Reset Log Buffer: Clear log files prior to re-execution
+rm -f data_exports/test_execution-<baselines|sweeps|stage4>.log
 
-# === Proxmox LXC (executed on Proxmox VE host) ===
-pct exec 201 -- systemctl status <dcs-run-baselines|dcs-run-sweeps> 
-pct exec 201 -- journalctl -u <dcs-run-baselines|dcs-run-sweeps> -f -o cat 
-pct exec 201 -- systemctl stop <dcs-run-baselines|dcs-run-sweeps>
-pct exec 201 -- systemctl reset-failed
+# === Proxmox LXC (executed on Proxmox VE hypervisor host) ===
+# Status: Print full status & recent logs without pagination; enable terminal wrapping
+pct exec 201 -- systemctl status <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4> --no-pager -l
+# Logs (Historical): Print full unit log history to stdout (non-blocking, wrapped)
+pct exec 201 -- journalctl -u <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4> --no-pager -l -o cat
+# Logs (Live Follow): Follow stdout/stderr streams in real time
+pct exec 201 -- journalctl -u <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4> -f -o cat
+# Abort Execution: Terminate the unit control group
+pct exec 201 -- systemctl stop <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4>
+# Reset Failed State: Clear transient unit failure markers
+pct exec 201 -- systemctl reset-failed <dcs-run-baselines|dcs-run-sweeps|dcs-run-stage4>
+
 ```
 
 
@@ -66,117 +88,192 @@ Execute **only one** path corresponding to your target runtime environment. Stag
 
 ### Path A: Bare-Metal Hardware Target (Raspberry Pi 3B)
 
-#### Stages 0-3 
+#### Stages 0–3
 
 **Context:** Controller Node (`dcs-ctrl-node`); Root Path: `/opt/resilient-wireless-pid`
 
 ```bash
-# Stage 0: Quiet Baselines (Perform 3 consecutive runs)
-sudo systemd-run --unit=dcs-run-baselines --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
+# Stage 0: Quiet Baselines (Execute 3 consecutive runs)
+# For each of the 3 runs, execute:
+sudo systemctl reset-failed dcs-run-baselines 2>/dev/null || true
+sudo systemd-run --unit=dcs-run-baselines --working-directory=/opt/resilient-wireless-pid \
+  /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
 
-# Wait until service completes, then run:
-systemctl reset-failed dcs-baseline-runner 2>/dev/null || true
+# Wait until completion before triggering the next run. Inspect status with:
+sudo systemctl status dcs-run-baselines --no-pager -l
+
 ```
+
 ```bash
 # Stages 1–3: Netem Impairment Sweeps
-sudo systemd-run --unit=dcs-run-sweeps --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py
+sudo systemctl reset-failed dcs-run-sweeps 2>/dev/null || true
+sudo systemd-run --unit=dcs-run-sweeps --working-directory=/opt/resilient-wireless-pid \
+  /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py --duration 300
+
 ```
 
-#### Stage 4 (Adversary Cross-Traffic)
+#### Stage 4: Adversary Cross-Traffic
 
-Perform four consecutive runs of the below steps to accomplish baseline trails against these target rates: 
-1. Light Loading: 2 Mbps (`iperf3 -c 10.10.10.1 -u -b 2M -t 1200`) 
-2. Medium Loading: 5 Mbps (`iperf3 -c 10.10.10.1 -u -b 5M -t 1200`) 
-3. Heavy Loading: 10 Mbps (`iperf3 -c 10.10.10.1 -u -b 10M -t 1200`) 
-4. Channel Saturation: Uncapped / Maximum Link Rate (`iperf3 -c 10.10.10.1 -u -b 0 -t 1200`)
+Execute **four consecutive runs**, pairing one of the target loading commands on `dcs-plant-node` with `run_baselines.py` on `dcs-ctrl-node`:
 
+* **Run 1 (Light):** `iperf3 -c 10.10.10.1 -u -b 2M -t 1200`
+* **Run 2 (Medium):** `iperf3 -c 10.10.10.1 -u -b 5M -t 1200`
+* **Run 3 (Heavy):** `iperf3 -c 10.10.10.1 -u -b 10M -t 1200`
+* **Run 4 (Saturation):** `iperf3 -c 10.10.10.1 -u -b 0 -t 1200`
 
-Execute the following steps in tandem, substituting the `iperf3` command for desired target rate on each consecutive run: 
+For each of the 4 loading conditions:
 
-1. **Context:** Plant Node (`dcs-plant-node` or secondary traffic generator node):
-   ```bash
-   # Rate 1 - Light Loading (2Mbps)
-   iperf3 -c 10.10.10.1 -u -b 2M -t 1200
-   ```
-2. **Context:** Controller Node (`dcs-ctrl-node`); Root Path: `/opt/resilient-wireless-pid`:
-   ```bash
-   sudo systemd-run --unit=dcs-run-stage4 --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
-   ```
-Once `run_baselines.py` completes, reset the systemd unit before the next execution: 
+1. **Context:** Plant Node (`dcs-plant-node`):
 ```bash
-sudo systemctl reset-failed dcs-run-stage4
+# Launch cross-traffic (substitute target bandwidth: 2M, 5M, 10M, or 0)
+iperf3 -c 10.10.10.1 -u -b <TARGET_RATE> -t 1200
+
 ```
+
+
+2. **Context:** Controller Node (`dcs-ctrl-node` via SSH):
+```bash
+sudo systemctl reset-failed dcs-run-stage4 2>/dev/null || true
+sudo systemd-run --unit=dcs-run-stage4 --working-directory=/opt/resilient-wireless-pid \
+  /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
+
+```
+
+
+3. Once `dcs-run-stage4` completes, terminate any residual `iperf3` processes on `dcs-plant-node` before proceeding to the next run rate.
 
 ---
 
 ### Path B: Docker Virtual Target
 
-#### Stages 0-3 
+#### Stages 0–3
 
-**Context:** Local Docker Host, Root Path: Repository Root
+**Context:** Local Docker Host; Root Path: Repository Root
 
 ```bash
-# Stage 0: Quiet Baselines (Perform 3 consecutive runs)
+# Stage 0: Quiet Baselines (Execute 3 consecutive runs)
+# For each of the 3 runs, execute:
 docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
-  bash -c "python3 scripts/test/run_baselines.py >> data_exports/test_execution-baselines.log 2>&1" 
+  bash -c "/opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py >> data_exports/test_execution-baselines.log 2>&1"
+
+# Monitor progress and wait for process exit:
+tail -f data_exports/test_execution-baselines.log
+
 ```
+
 ```bash
 # Stages 1–3: Netem Impairment Sweeps
 docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
-  bash -c "python3 scripts/test/run_sweeps.py >> data_exports/test_execution-sweeps.log 2>&1" 
+  bash -c "/opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py --duration 300 >> data_exports/test_execution-sweeps.log 2>&1"
+
+# Monitor progress:
+tail -f data_exports/test_execution-sweeps.log
+
 ```
 
-#### Stage 4 (Adversary Cross-Traffic)
+#### Stage 4: Adversary Cross-Traffic
 
-Execute the following steps in tandem: 
+Execute **four consecutive runs**, pairing one of the target loading commands on `dcs-plant-node` with `run_baselines.py` on `dcs-ctrl-node`:
 
-1. **Context:** Docker Host targetting Plant Container (`dcs-plant-node`):
-   ```bash
-   docker exec -d dcs-plant-node iperf3 -c 10.10.10.1 -u -b 10M -t 1200
-   ```
-2. **Context:** Docker Host targetting Controller Container (`dcs-ctrl-node`):
-   ```bash
-   docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_baselines.py >> data_exports/test_execution-stage4.log 2>&1
-   ```
+* **Run 1 (Light):** `2M`
+* **Run 2 (Medium):** `5M`
+* **Run 3 (Heavy):** `10M`
+* **Run 4 (Saturation):** `0` (uncapped)
+
+For each of the 4 loading conditions:
+
+1. **Context:** Docker Host targeting Plant Container (`dcs-plant-node`):
+```bash
+# Launch cross-traffic (substitute target bandwidth: 2M, 5M, 10M, or 0)
+docker exec -d dcs-plant-node iperf3 -c 10.10.10.1 -u -b <TARGET_RATE> -t 1200
+
+```
+
+
+2. **Context:** Docker Host targeting Controller Container (`dcs-ctrl-node`):
+```bash
+docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
+  bash -c "/opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py >> data_exports/test_execution-stage4.log 2>&1"
+
+```
+
+
+3. Once the baseline execution completes, purge residual `iperf3` processes:
+```bash
+docker exec dcs-plant-node sh -c 'kill $(grep -l "iperf3" /proc/[0-9]*/cmdline 2>/dev/null | cut -d/ -f3) 2>/dev/null || true'
+```
+
+
 
 ---
 
 ### Path C: Proxmox LXC Virtual Target
 
-#### Stages 0-3 
+#### Stages 0–3
 
-**Context:** Proxmox VE Host; Root Path: Host Shell
+**Context:** Proxmox VE Host Shell
 
 ```bash
-# Stage 0: Quiet Baselines (Perform 3 consecutive runs)
-pct exec 201 -- systemd-run --unit=dcs-run-baselines --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
+# Stage 0: Quiet Baselines (Execute 3 consecutive runs)
+# For each of the 3 runs, execute:
+pct exec 201 -- bash -c "systemctl reset-failed dcs-run-baselines 2>/dev/null || true \
+  systemd-run --unit=dcs-run-baselines --working-directory=/opt/resilient-wireless-pid \
+  /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py"
 
-# Wait until service completes, then run:
-pct exec 201 -- systemctl reset-failed dcs-baseline-runner 2>/dev/null || true
+# Wait until completion before triggering the next run. Inspect status with:
+pct exec 201 -- systemctl status dcs-run-baselines --no-pager -l
+
 ```
+
 ```bash
 # Stages 1–3: Netem Impairment Sweeps
-pct exec 201 -- systemd-run --unit=dcs-run-sweeps --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py
+pct exec 201 -- bash -c "systemctl reset-failed dcs-run-sweeps 2>/dev/null || true \
+  systemd-run --unit=dcs-run-sweeps --working-directory=/opt/resilient-wireless-pid \
+  /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py --duration 300"
+
 ```
 
-#### Stage 4 (Adversary Cross-Traffic) 
+#### Stage 4: Adversary Cross-Traffic
 
-Execute the following steps in tandem: 
+Execute **four consecutive runs**, pairing one of the target loading commands on container `202` (`dcs-plant-node`) with `run_baselines.py` on container `201` (`dcs-ctrl-node`):
 
-1. **Context:** Proxmox VE Host targetting Plant Container (`202`):
-   ```bash
-   pct exec 202 -- iperf3 -c 10.10.10.1 -u -b 10M -t 1200
-   ```
-2. **Context:** Proxmox VE Host targetting Controller Container (`201`):
-   ```bash
-   pct exec 201 -- systemd-run --unit=dcs-run-baselines --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py
-   ```
+* **Run 1 (Light):** `2M`
+* **Run 2 (Medium):** `5M`
+* **Run 3 (Heavy):** `10M`
+* **Run 4 (Saturation):** `0` (uncapped)
+
+For each of the 4 loading conditions:
+
+1. **Context:** Proxmox VE Host targeting Plant Container (`202`):
+```bash
+# Launch cross-traffic (substitute target bandwidth: 2M, 5M, 10M, or 0)
+pct exec 202 -- iperf3 -c 10.10.10.1 -u -b <TARGET_RATE> -t 1200
+
+```
+
+
+2. **Context:** Proxmox VE Host targeting Controller Container (`201`):
+```bash
+pct exec 201 -- bash -c "systemctl reset-failed dcs-run-stage4 2>/dev/null || true \
+  systemd-run --unit=dcs-run-stage4 --working-directory=/opt/resilient-wireless-pid \
+  /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py"
+
+```
+
+
+3. Once `dcs-run-stage4` completes, purge residual `iperf3` processes on CT 202:
+```bash
+pct exec 202 -- pkill -f iperf3 || true
+
+```
+
+
 
 ---
 
 ## 4. Post-Processing & Data Retrieval
 
-**Context:** Local Analysis Workstation, Root Path: Repository Root
+**Context:** Local Analysis Workstation; Root Path: Repository Root
 
 ```bash
 # 1. Fetch remote dataset exports (Bare-Metal Pi execution only)
@@ -184,6 +281,7 @@ Execute the following steps in tandem:
 
 # 2. Aggregate raw InfluxDB CSV exports into partitioned metrics
 python3 scripts/analysis/aggregate_and_postprocess.py --raw-dir data_exports --output-dir data_exports/processed
+
 ```
 
 ---
@@ -208,8 +306,8 @@ ssh admin@dcs-ctrl-node "sudo tc qdisc del dev wlan0 root 2>/dev/null || true"
 
 # 3. Confirm physical fan de-energization (Bare-Metal Pi Target Only)
 # ssh admin@dcs-plant-node "sudo i2cget -y 1 0x4c 0x4c"   # Must return 0x00
+
 ```
 
-> [!INFO]  
-> Refer to the [Virtual Environment Guide](virtual_environment_guide.md#4-decommissioning) to clean up virtual artifacts. 
-
+> [!INFO]
+> Refer to the [Virtual Environment Guide](https://www.google.com/search?q=virtual_environment_guide.md%234-decommissioning) to clean up virtual artifacts.
