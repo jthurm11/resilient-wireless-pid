@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/infra/hardware_manager.sh
 # Provisions, inspects, and decommissions physical Raspberry Pi nodes for the resilient DCS testbed.
-# Configures secondary network aliases, systemd daemons, and optional GPIO status monitors.
+# Configures deterministic static wireless profiles, systemd daemons, and optional GPIO status monitors.
 
 set -Eeuo pipefail
 
@@ -44,7 +44,6 @@ EOF
 }
 
 print_usage() {
-  # Renders CLI usage and option descriptions to stdout.
   cat <<EOF
 Usage: $0 [ctrl|plant] {create|destroy|status} [options]
 
@@ -77,8 +76,6 @@ msg_warn()  { echo -e "\r\033[K${TAB}${YW}[WARN]${CL} $1"; }
 msg_error() { echo -e "\r\033[K${TAB}${RD}[ERROR]${CL} $1"; exit 1; }
 
 parse_cli_arguments() {
-  # Parses CLI positional arguments, flags, and infers active node role.
-  # Args: $@ (raw command line parameters)
   for arg in "$@"; do
     case "$arg" in
       -h|--help)
@@ -139,7 +136,7 @@ check_execution_environment() {
   local arch
   arch="$(uname -m)"
   if [[ "$arch" != "armv7l" && "$arch" != "aarch64" ]]; then
-    msg_warn "Non-ARM architecture ($arch) detected. Physical buses may be absent."
+    msg_error "Non-ARM architecture ($arch) detected. Physical buses may be absent."
   fi
 }
 
@@ -168,7 +165,7 @@ resolve_repository_workspace() {
 }
 
 configure_secondary_network() {
-  # Applies secondary static IPv4 address alias to wireless interface.
+  # Applies static IPv4 address alias to wireless interface.
   # Args: $1 (role: 'ctrl' or 'plant')
   local role="$1"
   local iface
@@ -177,16 +174,29 @@ configure_secondary_network() {
 
   [ "$role" == "ctrl" ] && target_ip="$CTRL_IP" || target_ip="$PLANT_IP"
 
-  msg_info "Configuring secondary alias ${target_ip}/${DCS_SUBNET_MASK} on ${iface}"
-  
+  msg_info "Configuring static DCS interface ${target_ip}/${DCS_SUBNET_MASK} on ${iface}"
+
+  # Immediate kernel fallback binding
   ip addr del "${target_ip}/${DCS_SUBNET_MASK}" dev "$iface" 2>/dev/null || true
   ip addr add "${target_ip}/${DCS_SUBNET_MASK}" dev "$iface" label "${iface}:dcs"
 
   if command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager; then
     local conn_name
     conn_name="$(nmcli -t -f NAME,DEVICE connection show --active | grep ":${iface}$" | cut -d: -f1 | head -n 1 || true)"
+    
     if [ -n "$conn_name" ]; then
+      # Pin the secondary static IP and ensure connection stability
       nmcli connection modify "$conn_name" +ipv4.addresses "${target_ip}/${DCS_SUBNET_MASK}" 2>/dev/null || true
+      
+      # Hardening: Disable 802.11 powersave and randomize MAC scanning to prevent firm-lock
+      nmcli connection modify "$conn_name" 802-11-wireless.powersave 2 2>/dev/null || true
+      nmcli connection modify "$conn_name" wifi.scan-rand-mac-address 0 2>/dev/null || true
+      
+      # Suppress DHCP renewal timeouts from tearing down static aliases
+      nmcli connection modify "$conn_name" ipv4.may-fail yes 2>/dev/null || true
+
+      # Reload connection without breaking active association
+      nmcli connection up "$conn_name" >/dev/null 2>&1 || true
     fi
   elif [ -d "/etc/network" ]; then
     mkdir -p /etc/network/interfaces.d
@@ -198,7 +208,12 @@ iface ${iface}:dcs inet static
 EOF
   fi
 
-  msg_ok "DCS control alias bound to ${iface}:dcs (${target_ip})"
+  # Explicitly disable wireless power save at the wireless device driver layer via iw
+  if command -v iw >/dev/null 2>&1; then
+    iw dev "$iface" set power_save off 2>/dev/null || true
+  fi
+
+  msg_ok "DCS static network bound to ${iface} (${target_ip})"
 }
 
 remove_secondary_network() {
@@ -216,6 +231,7 @@ remove_secondary_network() {
     if [ -n "$conn_name" ]; then
       nmcli connection modify "$conn_name" -ipv4.addresses "${CTRL_IP}/${DCS_SUBNET_MASK}" 2>/dev/null || true
       nmcli connection modify "$conn_name" -ipv4.addresses "${PLANT_IP}/${DCS_SUBNET_MASK}" 2>/dev/null || true
+      nmcli connection modify "$conn_name" 802-11-wireless.powersave 0 2>/dev/null || true
     fi
   fi
 
@@ -306,7 +322,7 @@ deploy_led_monitor() {
   local peer_ip=""
   [ "$role" == "ctrl" ] && peer_ip="$PLANT_IP" || peer_ip="$CTRL_IP"
 
-  msg_info "Deploying optional hardware diagnostic LED monitor daemon"
+  msg_info "Deploying hardware diagnostic LED monitor daemon"
   
   cat <<EOF > /usr/local/bin/dcs-led-monitor.py
 #!/usr/bin/env python3
@@ -387,7 +403,7 @@ EOF
 provision_workspace() {
   # Installs system packages conditionally per role and prepares the virtualenv.
   local role="$1"
-  local base_pkgs=("python3-pip" "python3-venv" "iproute2" "rsync")
+  local base_pkgs=("python3-pip" "python3-venv" "iproute2" "rsync" "iw")
 
   if [ "$role" == "plant" ]; then
     # Hardware Plant requires SMBus (I2C) and the RPi.GPIO character shim
