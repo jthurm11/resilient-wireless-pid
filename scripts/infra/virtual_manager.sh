@@ -566,7 +566,7 @@ sync_lxc_guest() {
   fi
 
   # Restart node-specific systemd daemon if present
-  if systemctl list-unit-files | grep -q "^dcs-controller.service"; then
+  if systemctl list-unit-files "dcs-controller.service" --no-pager | grep -q "^dcs-controller.service"; then
     msg_info "Restarting dcs-controller.service"
     systemctl restart dcs-controller.service
     msg_ok "dcs-controller active"
@@ -577,7 +577,7 @@ sync_lxc_guest() {
       ./scripts/infra/telemetry_stack.sh create --no-header >/dev/null 2>&1
       msg_ok "Telemetry stack refreshed"
     fi
-  elif systemctl list-unit-files | grep -q "^dcs-plant.service"; then
+  elif systemctl list-unit-files "dcs-plant.service" --no-pager | grep -q "^dcs-plant.service"; then
     msg_info "Restarting dcs-plant.service"
     systemctl restart dcs-plant.service
     msg_ok "dcs-plant active"
