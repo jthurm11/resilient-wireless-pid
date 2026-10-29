@@ -60,6 +60,20 @@ def resolve_tube_type(df: pd.DataFrame, default_tube: str) -> str:
     return default_tube.strip().lower()
 
 
+def resolve_environment(df: pd.DataFrame, default_env: str) -> str:
+    """Infer runtime target from DataFrame metadata, trial_id, or fallback default."""
+    if "environment" in df.columns and not df["environment"].dropna().empty:
+        return str(df["environment"].dropna().iloc[0]).strip().lower()
+
+    if "trial_id" in df.columns and not df["trial_id"].dropna().empty:
+        sample_id = str(df["trial_id"].dropna().iloc[0]).lower()
+        for env_key in ["hardware_rpi", "rpi", "proxmox_lxc", "proxmox", "docker"]:
+            if env_key in sample_id:
+                return "hardware_rpi" if "rpi" in env_key else ("proxmox_lxc" if "proxmox" in env_key else "docker")
+
+    return default_env.strip().lower()
+
+
 def calculate_control_kpis(trial_df: pd.DataFrame) -> dict[str, Any]:
     """Computes academic-standard control performance indicators over a trial time-series."""
     if trial_df.empty or "error" not in trial_df.columns:
@@ -198,8 +212,8 @@ def postprocess_trial_dataframe(
     else:
         df["distribution"] = "none"
 
-    if "environment" not in df.columns:
-        df["environment"] = default_env
+    # Unconditionally resolve environment (handles missing, null, or existing series)
+    df["environment"] = resolve_environment(df, default_env)
 
     core_order = [
         "_time",
