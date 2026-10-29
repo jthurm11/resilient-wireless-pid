@@ -403,11 +403,11 @@ EOF
 provision_workspace() {
   # Installs system packages conditionally per role and prepares the virtualenv.
   local role="$1"
-  local base_pkgs=("python3-pip" "python3-venv" "iproute2" "rsync" "iw")
+  local base_pkgs=("python3-pip" "python3-venv" "iproute2" "iperf3" "rsync" "iw")
 
   if [ "$role" == "plant" ]; then
     # Hardware Plant requires SMBus (I2C) and the RPi.GPIO character shim
-    base_pkgs+=("python3-smbus2" "python3-rpi-lgpio" "i2c-tools" "iperf3")
+    base_pkgs+=("python3-smbus2" "python3-rpi-lgpio" "i2c-tools" )
   fi
 
   if [ "$ENABLE_LED_MONITOR" = true ]; then
