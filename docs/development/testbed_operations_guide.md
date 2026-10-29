@@ -154,7 +154,7 @@ sudo systemd-run --unit=dcs-run-stage4 --working-directory=/opt/resilient-wirele
 # Stage 0: Quiet Baselines (Execute 3 consecutive runs)
 # For each of the 3 runs, execute:
 docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
-  bash -c "/opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py >> data_exports/test_execution-baselines.log 2>&1"
+  bash -c "python3 scripts/test/run_baselines.py >> data_exports/test_execution-baselines.log 2>&1"
 
 # Monitor progress and wait for process exit:
 tail -f data_exports/test_execution-baselines.log
@@ -164,7 +164,7 @@ tail -f data_exports/test_execution-baselines.log
 ```bash
 # Stages 1–3: Netem Impairment Sweeps
 docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
-  bash -c "/opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py --duration 300 >> data_exports/test_execution-sweeps.log 2>&1"
+  bash -c "python3 scripts/test/run_sweeps.py --duration 300 >> data_exports/test_execution-sweeps.log 2>&1"
 
 # Monitor progress:
 tail -f data_exports/test_execution-sweeps.log
@@ -193,7 +193,7 @@ docker exec -d dcs-plant-node iperf3 -c 10.10.10.1 -u -b <TARGET_RATE> -t 1200
 2. **Context:** Docker Host targeting Controller Container (`dcs-ctrl-node`):
 ```bash
 docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-node \
-  bash -c "/opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py >> data_exports/test_execution-stage4.log 2>&1"
+  bash -c "python3 scripts/test/run_baselines.py >> data_exports/test_execution-stage4.log 2>&1"
 
 ```
 
