@@ -43,6 +43,7 @@ class BaselineTrialConfig:
     tube_inner_dia_mm: float
     phases: list[StepPhase]
     export_filename: str
+    adversary_rate_kbps: int
 
 
 class TrafficController:
@@ -220,15 +221,18 @@ class BaselineOrchestrator:
                 else:
                     df["algorithm"] = config.algorithm
 
+                # Assign physical and experimental treatment parameters
                 df["tube_type"] = config.tube_type
                 df["tube_length_cm"] = config.tube_length_cm
                 df["tube_inner_dia_mm"] = config.tube_inner_dia_mm
+                df["adversary_rate_kbps"] = config.adversary_rate_kbps
 
                 # Standardized schema enforcing complete physical and network states
                 canonical_cols = [
                     "_time",
                     "trial_id",
                     "algorithm",
+                    "adversary_rate_kbps",
                     "tube_type",
                     "tube_length_cm",
                     "tube_inner_dia_mm",
@@ -364,6 +368,12 @@ def parse_args() -> argparse.Namespace:
         default="http://127.0.0.1:5050",
         help="Supervisory C2 REST API endpoint",
     )
+    parser.add_argument(
+        "--adversary-rate",
+        type=int,
+        default=0,
+        help="Offered synthetic cross-traffic load in Kbps (default: 0 = unperturbed)",
+    )
     return parser.parse_args()
 
 
@@ -387,11 +397,10 @@ def main() -> None:
 
     try:
         for algo in target_algos:
-            # Deterministic, descriptive naming convention
-            trial_id = f"baseline_{args.tube_type}_{algo}_SP50-70_{session_ts}"
-            export_filename = (
-                f"baseline_{args.tube_type}_{algo}_SP50-70_{session_ts}.csv"
-            )
+            # Descriptive naming indexing algorithm, rate, and timestamp
+            prefix = "baseline" if args.adversary_rate == 0 else f"crosstraffic_{args.adversary_rate}k"
+            trial_id = f"{prefix}_{args.tube_type}_{algo}_SP50-70_{session_ts}"
+            export_filename = f"{trial_id}.csv"
 
             config = BaselineTrialConfig(
                 trial_id=trial_id,
@@ -401,6 +410,7 @@ def main() -> None:
                 tube_inner_dia_mm=tube_inner_dia_mm,
                 phases=phases,
                 export_filename=export_filename,
+                adversary_rate_kbps=args.adversary_rate,
             )
             orchestrator.execute_dynamic_trial(config, runway_duration=args.runway)
 
