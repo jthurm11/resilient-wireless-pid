@@ -391,7 +391,7 @@ provision_workspace() {
 
   if [ "$role" == "plant" ]; then
     # Hardware Plant requires SMBus (I2C) and the RPi.GPIO character shim
-    base_pkgs+=("python3-smbus2" "python3-rpi-lgpio" "i2c-tools")
+    base_pkgs+=("python3-smbus2" "python3-rpi-lgpio" "i2c-tools" "iperf3")
   fi
 
   if [ "$ENABLE_LED_MONITOR" = true ]; then
