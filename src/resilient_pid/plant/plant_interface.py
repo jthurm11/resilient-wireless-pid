@@ -391,14 +391,17 @@ class HardwarePlant(BasePlant):
 
     def _acquire_distance_cm(self) -> float:
         """
-        Executes a single bounded acoustic ping measurement.
+        Executes a single bounded acoustic ping measurement with CPU-safe yields.
         Returns distance in cm, or -1.0 if an edge times out.
         """
         # Drain residual HIGH state on ECHO from previous bounces
-        t_drain_limit = time.perf_counter() + 0.003
+        t_drain_limit = time.perf_counter() + 0.004
         while GPIO.input(self.echo_pin) == 1:
             if time.perf_counter() > t_drain_limit:
+                # Force-clear transducer line latch by cycling trigger
+                GPIO.output(self.trig_pin, GPIO.LOW)
                 return -1.0
+            time.sleep(0.0001)  # Micro-yield prevents 100% CPU lockup
 
         # Quiet holdoff (2ms) & 10us trigger pulse
         GPIO.output(self.trig_pin, GPIO.LOW)
@@ -407,38 +410,46 @@ class HardwarePlant(BasePlant):
         time.sleep(0.00001)
         GPIO.output(self.trig_pin, GPIO.LOW)
 
-        # Wait for rising edge (bounded to 6ms)
-        t_rise_deadline = time.perf_counter() + 0.006
+        # Wait for rising edge (bounded to 10ms to accommodate Linux task scheduler preemption)
+        t_rise_deadline = time.perf_counter() + 0.010
         while GPIO.input(self.echo_pin) == 0:
             if time.perf_counter() > t_rise_deadline:
                 return -1.0
+
         pulse_start = time.perf_counter()
 
-        # Wait for falling edge (bounded to 10ms ~ 170cm flight limit)
-        t_fall_deadline = pulse_start + 0.010
+        # Wait for falling edge (bounded to 15ms ~ 250cm acoustic horizon)
+        t_fall_deadline = pulse_start + 0.015
         while GPIO.input(self.echo_pin) == 1:
             if time.perf_counter() > t_fall_deadline:
                 return -1.0
-        pulse_end = time.perf_counter()
 
+        pulse_end = time.perf_counter()
         duration = pulse_end - pulse_start
         return (duration * 34300.0) / 2.0
 
     def _sensor_worker(self) -> None:
-        """Asynchronous HC-SR04 poller with physically bounded continuity."""
+        """Asynchronous HC-SR04 poller with backoff protection against acoustic latching."""
+        consecutive_timeouts = 0
+
         while self._running:
             d = self._acquire_distance_cm()
 
             # Bounded retry on miss
             if d < 0.0:
-                time.sleep(0.002)
+                consecutive_timeouts += 1
+                # If transducer is timing out, allow membrane oscillation to decay
+                if consecutive_timeouts > 2:
+                    time.sleep(0.050)  # 50ms transducer decay holdoff
+                else:
+                    time.sleep(0.005)
                 d = self._acquire_distance_cm()
+            else:
+                consecutive_timeouts = 0
 
             with self._lock:
-                # Physical Blind-Zone / Transducer Ringing Occlusion
-                #   Transducer blind band is < 3.8 cm (PV >= 91%).
-                #   If ping times out while sphere was recently at high elevation,
-                #   the sphere is physically occluding the transducer face.
+                # Blind-Zone / Top Aperture Occlusion:
+                # When ball is >= 70% and sensor times out or reads < 3.8 cm
                 if (0.0 <= d < 3.8) or (d < 0.0 and self._current_pv >= 70.0):
                     self._miss_count = 0
                     self._last_distance_cm = self.d_min_cm
@@ -484,7 +495,6 @@ class HardwarePlant(BasePlant):
                 u_t,
                 misses,
             )
-
         return pv
 
     def cleanup(self) -> None:
@@ -555,14 +565,12 @@ def restore_service(
     if suppress_restart:
         logger.info("Service restart suppressed via --no-service-restart.")
         return
-
     should_start = force_restart or was_active
     if not should_start:
         logger.debug(
             "Service %s was inactive prior to test run; skipping restart.", service_name
         )
         return
-
     logger.info("Initiating restart of background daemon: %s...", service_name)
     try:
         subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
@@ -590,27 +598,17 @@ def run_op_test(
     pre_test_samples: list[float] = []
     logger.info("Acquiring 10 resting distance samples from HC-SR04...")
     for _ in range(10):
-        _, dist, misses, _, _ = plant.get_telemetry_snapshot()
+        _, dist, _, _, _ = plant.get_telemetry_snapshot()
         if dist > 2.0:
             pre_test_samples.append(dist)
         time.sleep(0.08)
 
     if not pre_test_samples:
-        logger.error(
-            "PHASE 0 FAILED: Ultrasonic transducer returned 0 valid acoustic reflections. "
-            "Inspect HC-SR04 power and GPIO pins 23/24."
-        )
+        logger.error("Transducer returned 0 valid acoustic reflections.")
         return
 
     baseline_dist_cm = float(np.mean(pre_test_samples))
     baseline_std_cm = float(np.std(pre_test_samples))
-    logger.info(
-        "Static Baseline: Distance to ball = %.2f cm (std: %.2f cm) | Configured Tube = %.1f cm",
-        baseline_dist_cm,
-        baseline_std_cm,
-        plant.tube_length_cm,
-    )
-
     tube_delta = abs(baseline_dist_cm - plant.tube_length_cm)
     if tube_delta > 5.0:
         logger.warning(
@@ -622,7 +620,10 @@ def run_op_test(
         )
     else:
         logger.info(
-            "Geometry Verified: Baseline measurement conforms to physical column calibration."
+            "Geometry Verified: Distance to ball = %.2f cm (std: %.2f cm) | Configured Tube = %.1f cm",
+        baseline_dist_cm,
+        baseline_std_cm,
+        plant.tube_length_cm,
         )
 
     logger.info("=================================================================")
@@ -632,7 +633,6 @@ def run_op_test(
     logger.info("=================================================================")
 
     test_levels = [0.0, 30.0, 60.0, 90.0, 0.0]
-
     for target_pwm in test_levels:
         plant.set_fan_pwm(target_pwm)
         logger.info(
@@ -729,11 +729,9 @@ def run_op_test(
                 data, addr = sock.recvfrom(1024)
                 t_recv = time.perf_counter()
                 pkt = json.loads(data.decode("utf-8"))
-
                 seq = pkt.get("seq")
                 u_cmd = float(pkt.get("u", 0.0))
                 t_send = pkt.get("t_send")
-
                 pv = plant.step(u_cmd)
                 rpm = plant.read_tach_rpm()
 
@@ -759,11 +757,8 @@ def run_op_test(
                 resp = {"seq": seq, "pv": pv, "t_send": t_send, "t_echo": t_recv}
                 sock.sendto(json.dumps(resp).encode("utf-8"), addr)
                 received += 1
-
             except TimeoutError:
-                logger.error(
-                    "Socket timeout (>6s). No datagrams received from control node."
-                )
+                logger.error("Datagram timeout (>6s).")
                 return
     finally:
         sock.close()
@@ -783,7 +778,6 @@ def run_cycle_test(
     logger.info("=================================================================")
 
     duty_profile = [20.0, 50.0, 80.0, 40.0, 0.0]
-
     for cycle in range(1, cycles + 1):
         logger.info("--- Starting Cycle %d of %d ---", cycle, cycles)
         for u in duty_profile:
@@ -867,7 +861,6 @@ def parse_args() -> argparse.Namespace:
         dest="service_restart",
         help="Unconditionally start/restart dcs-plant.service after test completion.",
     )
-
     return parser.parse_args()
 
 
@@ -989,7 +982,6 @@ def main() -> None:
                 break
 
             t_recv = time.perf_counter()
-
             try:
                 pkt = json.loads(data.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
