@@ -483,7 +483,8 @@ class HardwarePlant(BasePlant):
             time.sleep(0.035)
 
     def step(self, u_t: float) -> float:
-        self.set_fan_pwm(u_t)
+        effective_u = 95.0 if (self._current_pv <= 6.0 and u_t >= 40.0) else u_t
+        self.set_fan_pwm(effective_u)
         pv, dist, misses, _, _ = self.get_telemetry_snapshot()
 
         if logger.isEnabledFor(logging.DEBUG) or int(time.time() * 2) % 10 == 0:
