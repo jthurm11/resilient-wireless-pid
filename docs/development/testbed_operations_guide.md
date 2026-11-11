@@ -32,7 +32,7 @@ Deploy and verify the targeted runtime environment per its setup guide **in its 
 * **Docker Virtual Target:** Deployed per [Virtual Environment Guide](virtual_environment_guide.md).
 * **Proxmox LXC Target:** Deployed per [Virtual Environment Guide](virtual_environment_guide.md).
 
-> [!INFO]  
+> [!TIP]  
 > **Telemetry Stack:** Deployed automatically during `dcs-ctrl-node` bootstrapping. Refer to the [Telemetry UI Guide](telemetry_ui_guide.md) for usage details.
 
 
@@ -218,7 +218,8 @@ sleep 15
 
 ```
 
-Repeat the previous steps for all loading conditions before progressing. 
+> [!IMPORTANT]  
+> Repeat the previous steps for all loading conditions before progressing. 
 
 **Post-flight (Controller Ingress):** Terminate listener daemon once all Stage 4 runs conclude:
 
@@ -352,5 +353,5 @@ ssh admin@dcs-ctrl-node "sudo tc qdisc del dev wlan0 root 2>/dev/null || true"
 
 ```
 
-> [!INFO]  
+> [!IMPORTANT]  
 > Refer to the [Virtual Environment Guide](virtual_environment_guide.md#4-decommissioning) to clean up virtual artifacts.
