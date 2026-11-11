@@ -66,6 +66,12 @@ Grafana is pre-configured via declarative provisioning files located in `configs
 3. Open the **Control Systems** folder and select the **Wireless PID Telemetry Dashboard**.
 4. Set the top-right time window to **Last 1 minute** and set auto-refresh to **1s**.
 
+| Dashboard | URL |
+| :--- | :--- |
+| Wireless PID Telemetry (*main*) | http://127.0.0.1:3000/d/pid-telemetry-eval/wireless-pid-telemetry-dashboard |
+| Wireless PID Advanced Analytics | http://127.0.0.1:3000/d/pid-advanced-analytics/wireless-pid-advanced-analytics |
+| DCS Node Infrastructure & System Health | http://127.0.0.1:3000/d/dcs-infra-health/dcs-node-infrastructure-and-system-health |
+
 ### 4.2 Dashboard Model Synchronization
 
 To persist modifications made in the Grafana UI back to source control:
