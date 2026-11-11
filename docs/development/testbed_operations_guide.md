@@ -67,7 +67,8 @@ sudo systemd-run --unit=dcs-run-baselines --working-directory=/opt/resilient-wir
 # Await completion before triggering the next run. Inspect status with:
 sudo systemctl status dcs-run-baselines --no-pager -l
 
-```
+> [!CAUTION]  
+> Do NOT execute any teardown, cleanup, or decommissioning commands until all 5 stages complete.
 
 ```bash
 # Stages 1–3: Netem Impairment Sweeps (Delay, Jitter, Packet Loss)
@@ -116,7 +117,7 @@ sudo journalctl -u dcs-run-stage4 -f -o cat
 sudo systemctl stop dcs-iperf 2>/dev/null || true
 sudo systemctl reset-failed dcs-iperf 2>/dev/null && sleep 15
 
-```
+### Path A: Bare-Metal Hardware Target (Raspberry Pi 3B)
 
 ---
 
@@ -150,6 +151,8 @@ docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-nod
 # Await completion before triggering next run. Follow progress via log:
 tail -f data_exports/test_execution-baselines.log
 
+# Stages 1–3: Netem Impairment Sweeps
+sudo systemd-run --unit=dcs-run-sweeps --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py
 ```
 
 ```bash
@@ -192,7 +195,7 @@ docker run -d --name dcs-iperf-client \
   --net=container:dcs-plant-node \
   --rm networkstatic/iperf3 -c 10.10.10.1 -u -b <TARGET_RATE> -t 1200
 
-```
+#### Stages 0-3 
 
 2. **Host Terminal targeting Controller Container (`dcs-ctrl-node`):** Launch trial orchestrator
 
@@ -205,6 +208,8 @@ docker exec -d -w /opt/resilient-wireless-pid -e PYTHONUNBUFFERED=1 dcs-ctrl-nod
 # Stream progress until completion:
 tail -f data_exports/test_execution-stage4.log
 
+# Stages 1–3: Netem Impairment Sweeps
+docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_sweeps.py >> data_exports/test_execution-sweeps.log 2>&1
 ```
 
 3. **Host Terminal:** Purge ephemeral adversary client and enforce socket drain window
@@ -225,7 +230,14 @@ Repeat the previous steps for all loading conditions before progressing.
 ```bash
 docker stop dcs-iperf-server 2>/dev/null || true
 
-```
+1. **Context:** Docker Host targetting Plant Container (`dcs-plant-node`):
+   ```bash
+   docker exec -d dcs-plant-node iperf3 -c 10.10.10.1 -u -b 10M -t 1200
+   ```
+2. **Context:** Docker Host targetting Controller Container (`dcs-ctrl-node`):
+   ```bash
+   docker exec -d -w /opt/resilient-wireless-pid dcs-ctrl-node python3 scripts/test/run_baselines.py >> data_exports/test_execution-stage4.log 2>&1
+   ```
 
 ---
 
@@ -271,6 +283,8 @@ pct exec 201 -- systemd-run --unit=dcs-run-sweeps --working-directory=/opt/resil
 # Stream execution progress:
 pct exec 201 -- journalctl -u dcs-run-sweeps -f -o cat
 
+# Stages 1–3: Netem Impairment Sweeps
+pct exec 201 -- systemd-run --unit=dcs-run-sweeps --working-directory=/opt/resilient-wireless-pid /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_sweeps.py
 ```
 
 #### Stage 4: Adversary Cross-Traffic
@@ -287,7 +301,7 @@ pct exec 202 -- systemctl reset-failed dcs-iperf 2>/dev/null || true
 pct exec 202 -- systemd-run --unit=dcs-iperf --property="CPUAffinity=3" --property="Nice=10" --property="KillMode=control-group" \
   iperf3 -c 10.10.10.1 -u -b <TARGET_RATE> -t 1200
 
-```
+## 4. Post-Processing & Data Retrieval
 
 2. **Proxmox Host targeting Controller Container (`CT 201`):** Launch trial orchestrator with rate tracking metadata
 
@@ -309,6 +323,8 @@ pct exec 201 -- journalctl -u dcs-run-stage4 -f -o cat
 pct exec 202 -- systemctl stop dcs-iperf 2>/dev/null || true
 pct exec 202 -- systemctl reset-failed dcs-iperf 2>/dev/null && sleep 15
 
+# 2. Aggregate raw InfluxDB CSV exports into partitioned metrics
+python3 scripts/analysis/aggregate_and_postprocess.py --raw-dir data_exports --output-dir data_exports/processed
 ```
 
 ---
