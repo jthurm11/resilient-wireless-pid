@@ -69,7 +69,11 @@ def resolve_environment(df: pd.DataFrame, default_env: str) -> str:
         sample_id = str(df["trial_id"].dropna().iloc[0]).lower()
         for env_key in ["hardware_rpi", "rpi", "proxmox_lxc", "proxmox", "docker"]:
             if env_key in sample_id:
-                return "hardware_rpi" if "rpi" in env_key else ("proxmox_lxc" if "proxmox" in env_key else "docker")
+                return (
+                    "hardware_rpi"
+                    if "rpi" in env_key
+                    else ("proxmox_lxc" if "proxmox" in env_key else "docker")
+                )
 
     return default_env.strip().lower()
 
