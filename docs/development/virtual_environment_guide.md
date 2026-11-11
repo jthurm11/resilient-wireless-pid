@@ -53,7 +53,7 @@ cd resilient-wireless-pid
 
 ```
 
-> [!NOTE]  
+> [!TIP]  
 > The Proxmox VE Host can alternatively download the `virtual_manager.sh` script directly, instead of cloning the whole repository: 
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/jthurm11/resilient-wireless-pid/main/scripts/infra/virtual_manager.sh -o virtual_manager.sh
