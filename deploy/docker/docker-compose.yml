@@ -30,6 +30,8 @@ services:
       - ../../:/opt/resilient-wireless-pid
     environment:
       - PYTHONDONTWRITEBYTECODE=1
+      - DCS_ENV=docker
+      - DCS_IFACE=wlan0
     command: tail -f /dev/null
 
   influxdb:
@@ -76,7 +78,9 @@ services:
     environment:
       - PYTHONDONTWRITEBYTECODE=1
       - DCS_ENV=docker
+      - DCS_IFACE=wlan0
       - C2_PORT=5050
+      - C2_URL=http://127.0.0.1:5050
       - INFLUXDB_URL=http://127.0.0.1:8086
       - INFLUXDB_TOKEN=testbed_secret_token_123
       - INFLUXDB_ORG=resilient_pid
@@ -99,6 +103,8 @@ services:
         ipv4_address: 10.10.10.2
     environment:
       - PYTHONDONTWRITEBYTECODE=1
+      - DCS_ENV=docker
+      - DCS_IFACE=wlan0
     volumes:
       - ../../:/opt/resilient-wireless-pid
     command: run-plant --mode simulate --host 0.0.0.0 --port 5005

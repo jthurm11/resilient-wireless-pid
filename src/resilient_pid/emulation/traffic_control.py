@@ -7,6 +7,7 @@ Coordinates kernel-level egress queue manipulations for deterministic packet deg
 
 import argparse
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,14 @@ class TrafficControlWrapper:
     Automates latency, stochastic jitter, and burst loss injection on egress interfaces.
     """
 
+    # Benign kernel netlink messages indicating the interface has no custom qdisc installed
+    BENIGN_FLUSH_RESPONSES = (
+        "Cannot find qdisc",
+        "No such file or directory",
+        "Cannot delete qdisc with handle of zero",
+        "handle of zero",
+    )
+
     def __init__(self, interface: str = "wlan0"):
         self.interface = interface
         self._check_tc_availability()
@@ -35,20 +44,30 @@ class TrafficControlWrapper:
             )
 
     def _run_cmd(self, cmd: list[str]) -> subprocess.CompletedProcess:
-        """Execute a shell command with captured standard streams and error handling."""
+        """Execute a shell command with optional privilege escalation and error handling."""
+        full_cmd = list(cmd)
+        # Prepend sudo if executing unprivileged and sudo exists in PATH
+        if os.geteuid() != 0 and shutil.which("sudo") is not None:
+            full_cmd.insert(0, "sudo")
+
         try:
-            logger.debug("Executing tc command: %s", " ".join(cmd))
-            return subprocess.run(cmd, capture_output=True, text=True, check=True)
+            logger.debug("Executing tc command: %s", " ".join(full_cmd))
+            return subprocess.run(full_cmd, capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as e:
-            logger.error("Command '%s' failed: %s", " ".join(cmd), e.stderr.strip())
-            raise RuntimeError(f"tc invocation failure: {e.stderr.strip()}") from e
+            err_msg = e.stderr.strip()
+            # Do not escalate benign qdisc flush errors to error logs
+            if any(token in err_msg for token in self.BENIGN_FLUSH_RESPONSES):
+                logger.debug("Benign tc status message: %s", err_msg)
+            else:
+                logger.error("Command '%s' failed: %s", " ".join(full_cmd), err_msg)
+            raise RuntimeError(f"tc invocation failure: {err_msg}") from e
 
     def clear_rules(self) -> bool:
         """
         Deletes root queuing discipline (qdisc) rules from interface.
-        Restores default kernel pfifo_fast line-rate operation.
+        Restores default kernel line-rate operation.
         """
-        cmd = ["sudo", "tc", "qdisc", "del", "dev", self.interface, "root"]
+        cmd = ["tc", "qdisc", "del", "dev", self.interface, "root"]
         try:
             self._run_cmd(cmd)
             logger.info(
@@ -56,9 +75,10 @@ class TrafficControlWrapper:
             )
             return True
         except Exception as e:
-            if "Cannot find qdisc" in str(e) or "No such file or directory" in str(e):
+            err_str = str(e)
+            if any(token in err_str for token in self.BENIGN_FLUSH_RESPONSES):
                 logger.debug(
-                    "Interface %s already unshaped (no root qdisc found).",
+                    "Interface %s already unshaped (default line-rate qdisc).",
                     self.interface,
                 )
                 return True
@@ -88,7 +108,6 @@ class TrafficControlWrapper:
         self.clear_rules()
 
         cmd = [
-            "sudo",
             "tc",
             "qdisc",
             "add",
