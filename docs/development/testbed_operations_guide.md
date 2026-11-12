@@ -84,6 +84,14 @@ sudo journalctl -u dcs-run-sweeps -f -o cat
 
 Execute **four consecutive runs**, pairing synthetic transport loading on `dcs-plant-node` with the telemetry test orchestrator on `dcs-ctrl-node`:
 
+**Pre-flight (`dcs-ctrl-node` Ingress):** Initialize ephemeral listening daemon:
+
+```bash
+sudo systemctl reset-failed dcs-iperf 2>/dev/null || true
+sudo systemd-run --unit=dcs-iperf iperf3 -s -B 0.0.0.0
+
+```
+
 For each of the 4 loading conditions:
 
 1. **Plant Node (`dcs-plant-node`):** Launch isolated background UDP generator
@@ -115,6 +123,16 @@ sudo journalctl -u dcs-run-stage4 -f -o cat
 # Terminate cross-traffic unit and enforce a 15-second quiet window before next run
 sudo systemctl stop dcs-iperf 2>/dev/null || true
 sudo systemctl reset-failed dcs-iperf 2>/dev/null && sleep 15
+
+```
+
+> [!IMPORTANT]  
+> Repeat the previous steps for all loading conditions before progressing. 
+
+**Post-flight (`dcs-ctrl-node` Ingress):** Terminate listener daemon once all Stage 4 runs conclude:
+
+```bash
+sudo systemctl stop dcs-iperf 2>/dev/null || true
 
 ```
 
@@ -278,6 +296,14 @@ pct exec 201 -- journalctl -u dcs-run-sweeps -f -o cat
 
 Execute **four consecutive runs**, pairing synthetic transport loading on CT `202` (`dcs-plant-node`) with the telemetry test orchestrator on CT `201` (`dcs-ctrl-node`):
 
+**Pre-flight (`dcs-ctrl-node` Ingress):** Initialize ephemeral listening daemon:
+
+```bash
+pct exec 201 -- systemctl reset-failed dcs-iperf 2>/dev/null || true
+pct exec 201 -- systemd-run --unit=dcs-iperf iperf3 -s -B 0.0.0.0
+
+```
+
 For each of the 4 loading conditions:
 
 1. **Proxmox Host targeting Plant Container (`CT 202`):** Launch isolated background UDP generator
@@ -309,6 +335,16 @@ pct exec 201 -- journalctl -u dcs-run-stage4 -f -o cat
 # Terminate cross-traffic unit and enforce a 15-second quiet window before next run
 pct exec 202 -- systemctl stop dcs-iperf 2>/dev/null || true
 pct exec 202 -- systemctl reset-failed dcs-iperf 2>/dev/null && sleep 15
+
+```
+
+> [!IMPORTANT]  
+> Repeat the previous steps for all loading conditions before progressing. 
+
+**Post-flight (`dcs-ctrl-node` Ingress):** Terminate listener daemon once all Stage 4 runs conclude:
+
+```bash
+pct exec 201 -- systemctl stop dcs-iperf 2>/dev/null || true
 
 ```
 
