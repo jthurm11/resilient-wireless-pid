@@ -506,13 +506,24 @@ status_lxc() {
 sync_lxc() {
   # Executed on Proxmox VE hypervisor host
   echo -e "${BOLD}Synchronizing LXC Environment to '${TARGET_BRANCH}'...${CL}"
+  local ACTIVE_REPO=""
 
-  msg_info "Synchronizing host workspace to '${TARGET_BRANCH}'"
-  cd "$TARGET_DIR" 2>/dev/null || cd "$REPO_ROOT"
-  git fetch origin >/dev/null 2>&1
-  git checkout "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Checkout failed: $TARGET_BRANCH"
-  git pull origin "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Pull failed: $TARGET_BRANCH"
-  msg_ok "Host workspace synchronized"
+  if [[ -e "$TARGET_DIR/.git" ]]; then
+    ACTIVE_REPO="$TARGET_DIR"
+  elif [[ -n "$REPO_ROOT" && -e "$REPO_ROOT/.git" ]]; then
+    ACTIVE_REPO="$REPO_ROOT"
+  fi
+
+  if [[ -n "$ACTIVE_REPO" ]]; then
+    msg_info "Synchronizing host workspace to '${TARGET_BRANCH}'"
+    cd "$ACTIVE_REPO" 2>/dev/null
+    git fetch origin >/dev/null 2>&1
+    git checkout "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Checkout failed: $TARGET_BRANCH"
+    git pull origin "$TARGET_BRANCH" >/dev/null 2>&1 || msg_error "Pull failed: $TARGET_BRANCH"
+    msg_ok "Host workspace synchronized"
+  else
+    msg_ok "Repository not found on $(hostname). Skipping Host sync."
+  fi
 
   for ctid in 201 202; do
     if pct status "$ctid" 2>/dev/null | grep -q "running"; then
