@@ -282,8 +282,12 @@ class SweepOrchestrator:
 
         # Vector 2: Stochastic jitter distributions (discrete, smith, resilient)
         jitter_profiles = [
-            ("gauss_40ms-j15ms", 40.0, 15.0, "normal"),
-            ("pareto_40ms-j15ms", 40.0, 15.0, "pareto"),
+            ("gauss_40ms-j5ms", 40.0, 5.0, "normal"),
+            ("pareto_40ms-j5ms", 40.0, 5.0, "pareto"),
+            ("gauss_40ms-j10ms", 40.0, 10.0, "normal"),
+            ("pareto_40ms-j10ms", 40.0, 10.0, "pareto"),
+            ("gauss_40ms-j20ms", 40.0, 20.0, "normal"),
+            ("pareto_40ms-j20ms", 40.0, 20.0, "pareto"),
         ]
         for name, delay, jitter, dist in jitter_profiles:
             for algo in ["discrete", "smith", "resilient"]:
