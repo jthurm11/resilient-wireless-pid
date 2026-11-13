@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/infra/virtual_environment.sh
+# scripts/infra/virtual_manager.sh
 # Unified orchestrator for Docker and Proxmox LXC distributed control mock testbeds.
 # Manages dual-node network topologies, systemd services, and container lifecycles.
 
