@@ -256,77 +256,107 @@ class SweepOrchestrator:
         self.export_trial_csv(config.trial_id, config.export_filename)
 
     def _generate_trial_matrix(
-        self, v1_dur: float, v2_dur: float, v3_dur: float
+        self,
+        v1_dur: float,
+        v2_dur: float,
+        v3_dur: float,
+        vectors: list[int] | None = None,
+        algos_override: list[str] | None = None,
+        jitter_values: list[int] | None = None,
     ) -> list[TrialConfig]:
         trials: list[TrialConfig] = []
         batch_ts = time.strftime("%Y%m%d_%H%M%S")
         target_sp = 60.0  # Calibrated aerodynamic sweet spot for acrylic column
         tube = "acrylic"
+        active_vectors = vectors or [1, 2, 3]
+        all_algos = algos_override or ["discrete", "smith", "resilient"]
+        jitters = jitter_values or [5, 10, 20]
 
-        # Vector 1: Dead-time sweeps (discrete vs smith)
-        for rtt_ms in range(10, 110, 10):
-            one_way_delay = float(rtt_ms // 2)
-            for algo in ["discrete", "smith"]:
-                t_id = f"sweep_deadtime_{tube}_{algo}_RTT{rtt_ms}ms_{batch_ts}"
-                fname = f"{t_id}.csv"
-                trials.append(
-                    TrialConfig(
-                        trial_id=t_id,
-                        algorithm=algo,
-                        setpoint=target_sp,
-                        delay_ms=one_way_delay,
-                        duration_sec=v1_dur,
-                        export_filename=fname,
+        # Vector 1: Dead-time sweeps (discrete, smith, resilient -> 30 trials)
+        if 1 in active_vectors:
+            for rtt_ms in range(10, 110, 10):
+                one_way_delay = float(rtt_ms // 2)
+                for algo in all_algos:
+                    t_id = f"sweep_deadtime_{tube}_{algo}_RTT{rtt_ms}ms_{batch_ts}"
+                    fname = f"{t_id}.csv"
+                    trials.append(
+                        TrialConfig(
+                            trial_id=t_id,
+                            algorithm=algo,
+                            setpoint=target_sp,
+                            delay_ms=one_way_delay,
+                            duration_sec=v1_dur,
+                            export_filename=fname,
+                        )
                     )
+
+        # Vector 2: Stochastic jitter distributions (discrete, smith, resilient -> 18 trials)
+        if 2 in active_vectors:
+            jitter_profiles = []
+            for j_ms in jitters:
+                jitter_profiles.append(
+                    (f"gauss_40ms-j{j_ms}ms", 40.0, float(j_ms), "normal")
+                )
+                jitter_profiles.append(
+                    (f"pareto_40ms-j{j_ms}ms", 40.0, float(j_ms), "pareto")
                 )
 
-        # Vector 2: Stochastic jitter distributions (discrete, smith, resilient)
-        jitter_profiles = [
-            ("gauss_40ms-j5ms", 40.0, 5.0, "normal"),
-            ("pareto_40ms-j5ms", 40.0, 5.0, "pareto"),
-            ("gauss_40ms-j10ms", 40.0, 10.0, "normal"),
-            ("pareto_40ms-j10ms", 40.0, 10.0, "pareto"),
-            ("gauss_40ms-j20ms", 40.0, 20.0, "normal"),
-            ("pareto_40ms-j20ms", 40.0, 20.0, "pareto"),
-        ]
-        for name, delay, jitter, dist in jitter_profiles:
-            for algo in ["discrete", "smith", "resilient"]:
-                t_id = f"sweep_jitter_{tube}_{algo}_{name}_{batch_ts}"
-                fname = f"{t_id}.csv"
-                trials.append(
-                    TrialConfig(
-                        trial_id=t_id,
-                        algorithm=algo,
-                        setpoint=target_sp,
-                        delay_ms=delay,
-                        jitter_ms=jitter,
-                        distribution=dist,
-                        duration_sec=v2_dur,
-                        export_filename=fname,
+            for name, delay, jitter, dist in jitter_profiles:
+                for algo in all_algos:
+                    t_id = f"sweep_jitter_{tube}_{algo}_{name}_{batch_ts}"
+                    fname = f"{t_id}.csv"
+                    trials.append(
+                        TrialConfig(
+                            trial_id=t_id,
+                            algorithm=algo,
+                            setpoint=target_sp,
+                            delay_ms=delay,
+                            jitter_ms=jitter,
+                            distribution=dist,
+                            duration_sec=v2_dur,
+                            export_filename=fname,
+                        )
                     )
-                )
 
-        # Vector 3: Burst loss profiles (discrete vs resilient)
-        for loss_pct in [2, 5, 10, 15, 20]:
-            for algo in ["discrete", "resilient"]:
-                t_id = f"sweep_loss_{tube}_{algo}_burst{loss_pct}pct_{batch_ts}"
-                fname = f"{t_id}.csv"
-                trials.append(
-                    TrialConfig(
-                        trial_id=t_id,
-                        algorithm=algo,
-                        setpoint=target_sp,
-                        loss_pct=float(loss_pct),
-                        loss_correlation_pct=25.0,
-                        duration_sec=v3_dur,
-                        export_filename=fname,
+        # Vector 3: Burst loss profiles (discrete, smith, resilient -> 15 trials)
+        if 3 in active_vectors:
+            for loss_pct in [2, 5, 10, 15, 20]:
+                for algo in all_algos:
+                    t_id = f"sweep_loss_{tube}_{algo}_burst{loss_pct}pct_{batch_ts}"
+                    fname = f"{t_id}.csv"
+                    trials.append(
+                        TrialConfig(
+                            trial_id=t_id,
+                            algorithm=algo,
+                            setpoint=target_sp,
+                            delay_ms=40.0,
+                            jitter_ms=10.0,
+                            loss_pct=float(loss_pct),
+                            loss_correlation_pct=25.0,
+                            duration_sec=v3_dur,
+                            export_filename=fname,
+                        )
                     )
-                )
 
         return trials
 
-    def execute_matrix(self, v1_dur: float, v2_dur: float, v3_dur: float) -> None:
-        trials = self._generate_trial_matrix(v1_dur, v2_dur, v3_dur)
+    def execute_matrix(
+        self,
+        v1_dur: float,
+        v2_dur: float,
+        v3_dur: float,
+        vectors: list[int] | None = None,
+        algos_override: list[str] | None = None,
+        jitter_values: list[int] | None = None,
+    ) -> None:
+        trials = self._generate_trial_matrix(
+            v1_dur,
+            v2_dur,
+            v3_dur,
+            vectors=vectors,
+            algos_override=algos_override,
+            jitter_values=jitter_values,
+        )
         total_trials = len(trials)
         logger.info(
             "Generated empirical sweep matrix: %d total trials scheduled.", total_trials
@@ -395,6 +425,29 @@ def parse_args() -> argparse.Namespace:
         default=35.0,
         help="Duration for Vector 3 burst loss trials (default: 35.0s)",
     )
+    parser.add_argument(
+        "--vector",
+        type=int,
+        nargs="+",
+        choices=[1, 2, 3],
+        default=None,
+        help="Optional filter to execute only specific vector(s): e.g. --vector 1 3",
+    )
+    parser.add_argument(
+        "--algorithm",
+        type=str,
+        nargs="+",
+        choices=["discrete", "smith", "resilient"],
+        default=None,
+        help="Optional filter to execute only specific algorithm(s): e.g. --algorithm resilient",
+    )
+    parser.add_argument(
+        "--jitter",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional filter for Vector 2 jitter sigma values (ms): e.g. --jitter 5 20",
+    )
     return parser.parse_args()
 
 
@@ -433,7 +486,14 @@ def main() -> None:
 
     logger.info("Starting automated parameter sweeps on interface %s", args.interface)
     try:
-        orchestrator.execute_matrix(v1_dur=v1_dur, v2_dur=v2_dur, v3_dur=v3_dur)
+        orchestrator.execute_matrix(
+            v1_dur=v1_dur,
+            v2_dur=v2_dur,
+            v3_dur=v3_dur,
+            vectors=args.vector,
+            algos_override=args.algorithm,
+            jitter_values=args.jitter,
+        )
     finally:
         logger.info(
             "Sweep batch concluded. Actuator de-energized. Data saved in %s",

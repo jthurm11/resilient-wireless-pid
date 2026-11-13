@@ -354,13 +354,28 @@ pct exec 201 -- systemctl stop dcs-iperf 2>/dev/null || true
 
 **Context:** Local Analysis Workstation; Root Path: Repository Root
 
-```bash
-# 1. Fetch remote dataset exports (Bare-Metal Pi execution only)
-./scripts/analysis/fetch_datasets.sh rpi <dcs-ctrl-node IP>
+1. Synchronize raw CSV telemetry exports from remote testbed nodes:
 
-# 2. Aggregate raw InfluxDB CSV exports into partitioned metrics
-python3 scripts/analysis/aggregate_and_postprocess.py --raw-dir data_exports --output-dir data_exports/processed \
-  --environment <hardware_rpi|docker|proxmox_lxc>
+```bash
+# Bare-Metal Raspberry Pi:
+rsync -avzP -e "ssh -o StrictHostKeyChecking=accept-new" --include="*/" --include="*.csv" --exclude="*" \
+  "admin@<RPI_CTRL_IP>:/opt/resilient-wireless-pid/data_exports/" ./data_exports/
+
+# Proxmox VE LXC:
+rsync -avzP -e "ssh -o StrictHostKeyChecking=accept-new" --include="*/" --include="*.csv" --exclude="*" \
+  --rsync-path="pct exec 201 -- rsync" \
+  "root@<PVE_HOST_IP>:/opt/resilient-wireless-pid/data_exports/" ./data_exports/
+
+# Docker Virtual Target:
+# Artifacts write directly to ./data_exports/ via host bind-mount.
+
+```
+
+2. Compile raw exports into master Parquet/CSV datasets:
+
+```bash
+python3 scripts/analysis/curate_telemetry.py \
+  --raw-dir ./data_exports --out-dir ./data_exports/standardized_master
 
 ```
 
