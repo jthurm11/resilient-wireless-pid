@@ -384,7 +384,7 @@ def conform_single_csv(
         elif stage == "stage3_burst_loss":
             df["jitter_ms"] = 10.0
         else:
-            df["jitter_ms"] = 0.0
+            df["jitter_ms"] = 15.0 if stage == "stage2_jitter" else 0.0
     else:
         df["jitter_ms"] = pd.to_numeric(df["jitter_ms"], errors="coerce").fillna(0.0)
 
