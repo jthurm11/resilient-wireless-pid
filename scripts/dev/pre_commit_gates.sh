@@ -193,7 +193,7 @@ run_ruff_format() {
   # Optional git re-staging for modified tracked files
   if [[ "${AUTO_STAGE}" -eq 1 ]]; then
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      git add -u src/ tests/
+      git add -u src/ tests/ scripts/
       msg_ok "Automatically re-staged formatting modifications in git index"
     fi
   fi
