@@ -15,9 +15,9 @@ All experimental stages are executed sequentially from **Stage 0** through **Sta
 | **Stage 1** | Pure Dead-Time ($\theta$) | `run_sweeps.py` | Delay $\theta \in [10, 20, \dots, 100\text{ ms}]$ via `tc/netem` | 30 delay sweeps logged across all control laws ($N=10$ per algorithm). |
 | **Stage 2** | Stochastic Jitter ($\sigma$) | `run_sweeps.py` | Fixed $\bar{\theta} = 40\text{ ms}$; Jitter $\sigma \in [5, 10, 20\text{ ms}]$ (Normal & Pareto) | 18 jitter/distribution sweeps logged across all control laws ($N=6$ per algorithm). |
 | **Stage 3** | Burst Packet Loss ($p_{\text{loss}}$) | `run_sweeps.py` | Fixed $\bar{\theta} = 40\text{ ms}, \sigma = 10\text{ ms}$; Loss $p_{\text{loss}} \in [2\%, 5\%, 10\%, 15\%, 20\%]$ | 15 packet loss sweeps logged across all control laws ($N=5$ per algorithm). |
-| **Stage 4** | Adversary Cross-Traffic | `iperf3` + `run_baselines.py` | Unshaped link + UDP cross-traffic ($200, 400, 600, 800\text{ Kbps}$) | 12 cross-traffic saturation trials logged ($N=4$ per algorithm). | 
+| **Stage 4** | Adversary Cross-Traffic | `iperf3` + `run_baselines.py` | Unshaped link + UDP cross-traffic ($200, 400, 600, 800\text{ Kbps}$) | 12 cross-traffic saturation trials logged ($N=4$ per algorithm). |
 
-**Overall Success Criterion:** All 84 trials completed and ingested into InfluxDB `wireless_pid_metrics`. 
+**Overall Success Criterion:** All 84 trials completed and ingested into InfluxDB `wireless_pid_metrics`.
 
 ---
 
@@ -82,9 +82,9 @@ sudo journalctl -u dcs-run-sweeps -f -o cat
 
 #### Stage 4: Adversary Cross-Traffic
 
-Execute **four consecutive runs**, pairing synthetic transport loading on `dcs-plant-node` with the telemetry test orchestrator on `dcs-ctrl-node`:
+Execute **four consecutive runs** ($200, 400, 600, 800\text{ Kbps}$). A passive `iperf3` server runs on `dcs-plant-node` (`10.10.10.2`), while `run_baselines.py` on `dcs-ctrl-node` automatically gates the reverse-mode UDP stream (`iperf3 -c 10.10.10.2 -u -b <RATE>K -R`) so cross-traffic ignites **only after** each algorithm's pre-flight runway converges:
 
-**Pre-flight (`dcs-ctrl-node` Ingress):** Initialize ephemeral listening daemon:
+**Pre-flight (`dcs-plant-node`):** Initialize passive listening daemon once before starting Stage 4:
 
 ```bash
 sudo systemctl reset-failed dcs-iperf 2>/dev/null || true
@@ -92,47 +92,27 @@ sudo systemd-run --unit=dcs-iperf iperf3 -s -B 0.0.0.0
 
 ```
 
-For each of the 4 loading conditions:
-
-1. **Plant Node (`dcs-plant-node`):** Launch isolated background UDP generator
+**Controller Node (`dcs-ctrl-node`):** Execute the trial orchestrator sequentially across each loading condition (`200`, `400`, `600`, `800`):
 
 ```bash
-# Substitute <TARGET_RATE> with 200K, 400K, 600K, or 800K
-sudo systemctl reset-failed dcs-iperf 2>/dev/null || true
-sudo systemd-run --unit=dcs-iperf --property="CPUAffinity=3" --property="Nice=10" --property="KillMode=control-group" \
-  iperf3 -c 10.10.10.1 -u -b <TARGET_RATE> -t 1200
-
-```
-
-2. **Controller Node (`dcs-ctrl-node`):** Launch trial orchestrator with rate tracking metadata
-
-```bash
-# Match <RATE_KBPS> to active cross-traffic (200, 400, 600, or 800)
+# Substitute <RATE_KBPS> with 200, 400, 600, or 800
 sudo systemctl reset-failed dcs-run-stage4 2>/dev/null || true
 sudo systemd-run --unit=dcs-run-stage4 --working-directory=/opt/resilient-wireless-pid \
   /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py --adversary-rate <RATE_KBPS>
 
-# Monitor active trial progress:
+# Monitor active trial progress (await completion before launching the next rate):
 sudo journalctl -u dcs-run-stage4 -f -o cat
 
 ```
 
-3. **Plant Node (`dcs-plant-node`):** Post-run cgroup termination and socket buffer drain
+> [!IMPORTANT]
+> Repeat the controller node command above for all 4 loading conditions (`200`, `400`, `600`, `800`) before progressing.
 
-```bash
-# Terminate cross-traffic unit and enforce a 15-second quiet window before next run
-sudo systemctl stop dcs-iperf 2>/dev/null || true
-sudo systemctl reset-failed dcs-iperf 2>/dev/null && sleep 15
-
-```
-
-> [!IMPORTANT]  
-> Repeat the previous steps for all loading conditions before progressing. 
-
-**Post-flight (`dcs-ctrl-node` Ingress):** Terminate listener daemon once all Stage 4 runs conclude:
+**Post-flight (`dcs-plant-node`):** Terminate the listener daemon once all Stage 4 runs conclude:
 
 ```bash
 sudo systemctl stop dcs-iperf 2>/dev/null || true
+sudo systemctl reset-failed dcs-iperf 2>/dev/null || true
 
 ```
 
@@ -141,10 +121,11 @@ sudo systemctl stop dcs-iperf 2>/dev/null || true
 ### Path B: Docker Virtual Target
 
 #### Lifecycle & Process Management Utilities
+
 **Host Context:** Local Workstation / Docker Engine Shell; Root Directory: Repository Root
 
 | Purpose | Command | Description |
-| :--- | :--- | :--- |
+| --- | --- | --- |
 | **Status (Daemon)** | `docker top dcs-ctrl-node \| grep -E "python3" \|\| echo "Inactive"` | Inspect active containerized Python trial runners via the host daemon process table. |
 | **Status (Adversary)** | `docker ps --filter "name=dcs-iperf"` | Interrogate active ephemeral adversary sidecar containers (server and client). |
 | **Historical Logs** | `cat data_exports/test_execution-<STAGE>.log` | Print captured trial telemetry and stdout/stderr history from the host runtime volume. |
@@ -156,6 +137,7 @@ sudo systemctl stop dcs-iperf 2>/dev/null || true
 > *Valid `<STAGE>` suffixes:* `baselines`, `sweeps`, `stage4`
 
 #### Stages 0–3: Baselines & Impairment Sweeps
+
 **Context:** Local Docker Host targeting container `dcs-ctrl-node`
 
 ```bash
@@ -185,8 +167,8 @@ tail -f data_exports/test_execution-sweeps.log
 
 Execute **four consecutive runs**, pairing synthetic transport loading on `dcs-plant-node` with the telemetry test orchestrator on `dcs-ctrl-node`. Adversary traffic is injected via lightweight ephemeral sidecar containers attached directly to the container network namespaces (`--net=container:<target>`):
 
-> [!NOTE]  
-> On the Docker virtual bridge, memory bus throughput clears UDP frames with near-zero loss (< 1%). This step validates containerized orchestration parity, telemetry tagging, and data pipeline conformance with bare-metal executions. 
+> [!NOTE]
+> On the Docker virtual bridge, memory bus throughput clears UDP frames with near-zero loss (< 1%). When `DCS_ENV=docker`, `AdversaryTrafficController` yields automatically to these external sidecar containers while preserving `adversary_rate_kbps` telemetry tagging.
 
 **Pre-flight (Controller Ingress):** Initialize ephemeral listening daemon attached to controller container network stack:
 
@@ -236,8 +218,8 @@ sleep 15
 
 ```
 
-> [!IMPORTANT]  
-> Repeat the previous steps for all loading conditions before progressing. 
+> [!IMPORTANT]
+> Repeat the previous steps for all loading conditions before progressing.
 
 **Post-flight (Controller Ingress):** Terminate listener daemon once all Stage 4 runs conclude:
 
@@ -294,57 +276,37 @@ pct exec 201 -- journalctl -u dcs-run-sweeps -f -o cat
 
 #### Stage 4: Adversary Cross-Traffic
 
-Execute **four consecutive runs**, pairing synthetic transport loading on CT `202` (`dcs-plant-node`) with the telemetry test orchestrator on CT `201` (`dcs-ctrl-node`):
+Execute **four consecutive runs** ($200, 400, 600, 800\text{ Kbps}$). A passive `iperf3` server runs on CT `202` (`dcs-plant-node`, `10.10.10.2`), while `run_baselines.py` on CT `201` (`dcs-ctrl-node`) automatically gates the reverse-mode UDP stream (`iperf3 -c 10.10.10.2 -u -b <RATE>K -R`) after each algorithm's pre-flight runway stabilizes:
 
-**Pre-flight (`dcs-ctrl-node` Ingress):** Initialize ephemeral listening daemon:
-
-```bash
-pct exec 201 -- systemctl reset-failed dcs-iperf 2>/dev/null || true
-pct exec 201 -- systemd-run --unit=dcs-iperf iperf3 -s -B 0.0.0.0
-
-```
-
-For each of the 4 loading conditions:
-
-1. **Proxmox Host targeting Plant Container (`CT 202`):** Launch isolated background UDP generator
+**Pre-flight (`CT 202` Plant Node):** Initialize passive listening daemon once before starting Stage 4:
 
 ```bash
-# Substitute <TARGET_RATE> with 200K, 400K, 600K, or 800K
 pct exec 202 -- systemctl reset-failed dcs-iperf 2>/dev/null || true
-pct exec 202 -- systemd-run --unit=dcs-iperf --property="CPUAffinity=3" --property="Nice=10" --property="KillMode=control-group" \
-  iperf3 -c 10.10.10.1 -u -b <TARGET_RATE> -t 1200
+pct exec 202 -- systemd-run --unit=dcs-iperf iperf3 -s -B 0.0.0.0
 
 ```
 
-2. **Proxmox Host targeting Controller Container (`CT 201`):** Launch trial orchestrator with rate tracking metadata
+**Proxmox Host targeting Controller Container (`CT 201`):** Execute the trial orchestrator sequentially across each loading condition (`200`, `400`, `600`, `800`):
 
 ```bash
-# Match <RATE_KBPS> to active cross-traffic (200, 400, 600, or 800)
+# Substitute <RATE_KBPS> with 200, 400, 600, or 800
 pct exec 201 -- systemctl reset-failed dcs-run-stage4 2>/dev/null || true
 pct exec 201 -- systemd-run --unit=dcs-run-stage4 --working-directory=/opt/resilient-wireless-pid \
   /opt/resilient-wireless-pid/.venv/bin/python3 scripts/test/run_baselines.py --adversary-rate <RATE_KBPS>
 
-# Monitor active trial progress:
+# Monitor active trial progress (await completion before launching the next rate):
 pct exec 201 -- journalctl -u dcs-run-stage4 -f -o cat
 
 ```
 
-3. **Proxmox Host targeting Plant Container (`CT 202`):** Post-run cgroup termination and socket buffer drain
+> [!IMPORTANT]
+> Repeat the controller container command above for all 4 loading conditions (`200`, `400`, `600`, `800`) before progressing.
+
+**Post-flight (`CT 202` Plant Node):** Terminate the listener daemon once all Stage 4 runs conclude:
 
 ```bash
-# Terminate cross-traffic unit and enforce a 15-second quiet window before next run
 pct exec 202 -- systemctl stop dcs-iperf 2>/dev/null || true
-pct exec 202 -- systemctl reset-failed dcs-iperf 2>/dev/null && sleep 15
-
-```
-
-> [!IMPORTANT]  
-> Repeat the previous steps for all loading conditions before progressing. 
-
-**Post-flight (`dcs-ctrl-node` Ingress):** Terminate listener daemon once all Stage 4 runs conclude:
-
-```bash
-pct exec 201 -- systemctl stop dcs-iperf 2>/dev/null || true
+pct exec 202 -- systemctl reset-failed dcs-iperf 2>/dev/null || true
 
 ```
 
@@ -358,12 +320,16 @@ pct exec 201 -- systemctl stop dcs-iperf 2>/dev/null || true
 
 ```bash
 # Bare-Metal Raspberry Pi:
-rsync -avzP -e "ssh -o StrictHostKeyChecking=accept-new" --include="*/" --include="*.csv" --exclude="*" \
+rsync -avzP -e "ssh -o StrictHostKeyChecking=accept-new" \
+  --exclude="master_telemetry*" --exclude="curation_manifest*" \
+  --include="*/" --include="*.csv" --exclude="*" \
   "admin@<RPI_CTRL_IP>:/opt/resilient-wireless-pid/data_exports/" ./data_exports/
 
-# Proxmox VE LXC:
-rsync -avzP -e "ssh -o StrictHostKeyChecking=accept-new" --include="*/" --include="*.csv" --exclude="*" \
+# Proxmox VE LXC (Single-pass stream from CT 201 volume via hypervisor):
+rsync -avzP -e "ssh -o StrictHostKeyChecking=accept-new" \
   --rsync-path="pct exec 201 -- rsync" \
+  --exclude="master_telemetry*" --exclude="curation_manifest*" \
+  --include="*/" --include="*.csv" --exclude="*" \
   "root@<PVE_HOST_IP>:/opt/resilient-wireless-pid/data_exports/" ./data_exports/
 
 # Docker Virtual Target:
@@ -371,11 +337,11 @@ rsync -avzP -e "ssh -o StrictHostKeyChecking=accept-new" --include="*/" --includ
 
 ```
 
-2. Compile raw exports into master Parquet/CSV datasets:
+2. Conform and compile raw exports into master Parquet/CSV datasets with reconciliation auditing:
 
 ```bash
 python3 scripts/analysis/curate_telemetry.py \
-  --raw-dir ./data_exports --out-dir ./data_exports/standardized_master
+  --raw-dir ./data_exports --out-dir ./data_exports/standardized_master --audit
 
 ```
 

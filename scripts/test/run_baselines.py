@@ -9,7 +9,6 @@ Standardized for complete physical/network state export and deterministic naming
 import argparse
 import logging
 import os
-import subprocess
 import time
 from dataclasses import dataclass
 
@@ -17,6 +16,19 @@ import numpy as np
 import pandas as pd
 import requests
 from influxdb_client import InfluxDBClient
+
+# Programmatic TrafficControl wrapper resolution
+try:
+    from resilient_pid.emulation.traffic_control import (
+        AdversaryTrafficController,
+        TrafficControlWrapper,
+    )
+except ImportError:
+    try:
+        from traffic_control import AdversaryTrafficController, TrafficControlWrapper
+    except ImportError:
+        AdversaryTrafficController = None
+        TrafficControlWrapper = None
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -46,30 +58,13 @@ class BaselineTrialConfig:
     adversary_rate_kbps: int
 
 
-class TrafficController:
-    """Manages Linux kernel tc/netem queuing disciplines to guarantee zero impairment."""
-
-    def __init__(self, interface: str):
-        self.interface = interface
-
-    def clear_rules(self) -> None:
-        """Flushes egress qdisc rules to ensure unshaped line-rate operation."""
-        cmd = ["tc", "qdisc", "del", "dev", self.interface, "root"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0 and "No such file or directory" not in res.stderr:
-            logger.debug("tc cleanup (%s): %s", self.interface, res.stderr.strip())
-        else:
-            logger.info(
-                "Kernel netem cleared on %s: Baseline line-rate active.", self.interface
-            )
-
-
 class BaselineOrchestrator:
     """Coordinates empirical baseline step-response trials."""
 
     def __init__(
         self,
         interface: str,
+        adversary_rate_kbps: int = 0,
         c2_url: str = "http://127.0.0.1:5050",
         influx_url: str = os.getenv("INFLUXDB_URL", "http://127.0.0.1:8086"),
         influx_token: str = os.getenv("INFLUXDB_TOKEN", "testbed_secret_token_123"),
@@ -77,7 +72,17 @@ class BaselineOrchestrator:
         influx_bucket: str = os.getenv("INFLUXDB_BUCKET", "wireless_pid_metrics"),
         data_export_dir: str = "/opt/resilient-wireless-pid/data_exports",
     ):
-        self.tc = TrafficController(interface)
+        if TrafficControlWrapper is not None:
+            self.tc = TrafficControlWrapper(interface=interface)
+        else:
+            logger.warning("TrafficControlWrapper unavailable; executing unshaped.")
+            self.tc = None
+
+        if AdversaryTrafficController is not None:
+            self.adversary = AdversaryTrafficController(rate_kbps=adversary_rate_kbps)
+        else:
+            self.adversary = None
+
         self.c2_url = c2_url.rstrip("/")
         self.influx_url = influx_url
         self.influx_token = influx_token
@@ -131,6 +136,14 @@ class BaselineOrchestrator:
         except requests.RequestException:
             pass
 
+    def cleanup(self) -> None:
+        """Failsafe routine to stop cross-traffic, unshape kernel egress, and de-energize actuators."""
+        if self.adversary is not None:
+            self.adversary.stop()
+        self.stop_c2_actuation()
+        if self.tc is not None:
+            self.tc.clear_rules()
+
     def run_preflight_runway(
         self, initial_sp: float, max_runway_sec: float = 35.0
     ) -> None:
@@ -143,7 +156,8 @@ class BaselineOrchestrator:
             initial_sp,
             max_runway_sec,
         )
-        self.tc.clear_rules()
+        if self.tc is not None:
+            self.tc.clear_rules()
 
         # Engage blower
         self.set_c2_state(
@@ -273,10 +287,19 @@ class BaselineOrchestrator:
     ) -> None:
         """Executes a dynamic step sequence with adaptive pre-flight stabilization."""
         try:
+            if self.adversary is not None:
+                self.adversary.stop()
+
             initial_sp = config.phases[0].setpoint
             self.run_preflight_runway(
                 initial_sp=initial_sp, max_runway_sec=runway_duration
             )
+
+            # Ignite Stage 4 cross-traffic AFTER pre-flight runway converges
+            # (No-op in Docker where sidecar containers manage iperf3 externally)
+            if self.adversary is not None and config.adversary_rate_kbps > 0:
+                total_dur = sum(p.duration_sec for p in config.phases) + 15.0
+                self.adversary.start(duration_sec=total_dur)
 
             logger.info(
                 "=== Launching Dynamic Baseline: %s [Tube: %s | Algorithm: %s] ===",
@@ -303,11 +326,14 @@ class BaselineOrchestrator:
                 time.sleep(phase.duration_sec)
 
         finally:
-            self.stop_c2_actuation()
-            self.tc.clear_rules()
+            self.cleanup()
 
         time.sleep(2.0)
         self.export_trial_csv(config)
+        if config.adversary_rate_kbps > 0:
+            time.sleep(
+                10.0
+            )  # Allow wireless TX/RX socket buffers to drain before next runway
 
 
 def get_step_profile(tube_type: str, total_duration: float) -> list[StepPhase]:
@@ -379,7 +405,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    orchestrator = BaselineOrchestrator(interface=args.interface, c2_url=args.c2_url)
+    orchestrator = BaselineOrchestrator(
+        interface=args.interface,
+        adversary_rate_kbps=args.adversary_rate,
+        c2_url=args.c2_url,
+    )
 
     target_algos = (
         ["discrete", "smith", "resilient"]
@@ -420,16 +450,13 @@ def main() -> None:
 
     except KeyboardInterrupt:
         logger.warning("Operator interrupt detected. Shutting down...")
-        orchestrator.stop_c2_actuation()
-        orchestrator.tc.clear_rules()
+        orchestrator.cleanup()
     except Exception as err:
         logger.error("Execution aborted: %s", err)
-        orchestrator.stop_c2_actuation()
-        orchestrator.tc.clear_rules()
+        orchestrator.cleanup()
     finally:
         logger.info("Sweep batch concluded. Actuator de-energized.")
-        orchestrator.stop_c2_actuation()
-        orchestrator.tc.clear_rules()
+        orchestrator.cleanup()
 
 
 if __name__ == "__main__":
