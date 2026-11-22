@@ -262,6 +262,7 @@ class SweepOrchestrator:
         v3_dur: float,
         vectors: list[int] | None = None,
         algos_override: list[str] | None = None,
+        delay_values: list[int] | None = None,
         jitter_values: list[int] | None = None,
     ) -> list[TrialConfig]:
         trials: list[TrialConfig] = []
@@ -270,11 +271,12 @@ class SweepOrchestrator:
         tube = "acrylic"
         active_vectors = vectors or [1, 2, 3]
         all_algos = algos_override or ["discrete", "smith", "resilient"]
+        delays = delay_values or list(range(10, 110, 10))
         jitters = jitter_values or [5, 10, 20]
 
         # Vector 1: Dead-time sweeps (discrete, smith, resilient -> 30 trials)
         if 1 in active_vectors:
-            for rtt_ms in range(10, 110, 10):
+            for rtt_ms in delays:
                 one_way_delay = float(rtt_ms // 2)
                 for algo in all_algos:
                     t_id = f"sweep_deadtime_{tube}_{algo}_RTT{rtt_ms}ms_{batch_ts}"
@@ -347,6 +349,7 @@ class SweepOrchestrator:
         v3_dur: float,
         vectors: list[int] | None = None,
         algos_override: list[str] | None = None,
+        delay_values: list[int] | None = None,
         jitter_values: list[int] | None = None,
     ) -> None:
         trials = self._generate_trial_matrix(
@@ -355,6 +358,7 @@ class SweepOrchestrator:
             v3_dur,
             vectors=vectors,
             algos_override=algos_override,
+            delay_values=delay_values,
             jitter_values=jitter_values,
         )
         total_trials = len(trials)
@@ -442,6 +446,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional filter to execute only specific algorithm(s): e.g. --algorithm resilient",
     )
     parser.add_argument(
+        "--delay",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional filter for Vector 1 round-trip delay values (ms): e.g. --delay 90 100",
+    )
+    parser.add_argument(
         "--jitter",
         type=int,
         nargs="+",
@@ -492,6 +503,7 @@ def main() -> None:
             v3_dur=v3_dur,
             vectors=args.vector,
             algos_override=args.algorithm,
+            delay_values=args.delay,
             jitter_values=args.jitter,
         )
     finally:
