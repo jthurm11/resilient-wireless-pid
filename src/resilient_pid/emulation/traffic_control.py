@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 src/resilient_pid/emulation/traffic_control.py
-Linux Traffic Control (tc) and Network Emulation (netem) programmatic wrapper.
-Coordinates kernel-level egress queue manipulations for deterministic packet degradation.
+Linux Traffic Control (tc), Network Emulation (netem), and Stage 4 Adversary
+Cross-Traffic (iperf3) programmatic wrappers.
+Coordinates kernel-level egress queue manipulations and synthetic UDP saturation.
 """
 
 import argparse
@@ -164,6 +165,109 @@ class TrafficControlWrapper:
         except Exception as e:
             logger.error("Failed retrieving qdisc status: %s", e)
             return f"Error: {e}"
+
+
+class AdversaryTrafficController:
+    """
+    Coordinates per-trial iperf3 UDP cross-traffic in Reverse Mode (-R) from
+    the plant node (10.10.10.2 -> 10.10.10.1) after pre-flight runway convergence.
+    Automatically yields to external sidecar containers when running in Docker.
+    """
+
+    def __init__(
+        self,
+        rate_kbps: int = 0,
+        server_host: str = os.getenv("DCS_PLANT_IP", "10.10.10.2"),
+        server_port: int = 5201,
+        reverse: bool = True,
+    ):
+        self.rate_kbps = int(rate_kbps)
+        self.server_host = server_host
+        self.server_port = server_port
+        self.reverse = reverse
+        self.env_mode = os.getenv("DCS_ENV", "").strip().lower()
+        self._proc: subprocess.Popen | None = None
+
+    def _is_managed_externally(self) -> bool:
+        """Returns True if cross-traffic is managed via external Docker sidecars."""
+        if self.env_mode == "docker":
+            return True
+        if shutil.which("iperf3") is None:
+            return True
+        return False
+
+    def start(self, duration_sec: float = 320.0) -> bool:
+        """Spawns non-blocking iperf3 UDP stream for the active trial window."""
+        if self.rate_kbps <= 0:
+            return True
+
+        if self._is_managed_externally():
+            logger.info(
+                "Stage 4 rate=%d Kbps tagged (iperf3 managed externally via sidecar).",
+                self.rate_kbps,
+            )
+            return True
+
+        self.stop()
+
+        cmd: list[str] = []
+        if shutil.which("taskset") is not None and (os.cpu_count() or 1) >= 4:
+            cmd.extend(["taskset", "-c", "3"])
+        if shutil.which("nice") is not None:
+            cmd.extend(["nice", "-n", "10"])
+
+        cmd.extend(
+            [
+                "iperf3",
+                "-c",
+                self.server_host,
+                "-p",
+                str(self.server_port),
+                "-u",
+                "-b",
+                f"{self.rate_kbps}K",
+                "-t",
+                str(int(duration_sec)),
+            ]
+        )
+        if self.reverse:
+            cmd.append("-R")
+
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            logger.info(
+                "Adversary cross-traffic ignited [Rate: %d Kbps UDP | Server: %s (-R) | PID: %d]",
+                self.rate_kbps,
+                self.server_host,
+                self._proc.pid,
+            )
+            return True
+        except Exception as e:
+            logger.error("Failed launching iperf3 client: %s", e)
+            self._proc = None
+            return False
+
+    def stop(self) -> None:
+        """Terminates active iperf3 client process to restore quiet channel state."""
+        if self._proc is None:
+            return
+
+        if self._proc.poll() is None:
+            logger.info(
+                "Stopping adversary cross-traffic (PID %d) for clean link...",
+                self._proc.pid,
+            )
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                self._proc.wait(timeout=1.0)
+        self._proc = None
 
 
 def main() -> None:
